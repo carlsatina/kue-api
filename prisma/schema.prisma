@@ -1,0 +1,343 @@
+// Prisma schema for Kue MVP
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoleName {
+  admin
+  staff
+}
+
+enum SessionStatus {
+  draft
+  open
+  closed
+}
+
+enum FeeMode {
+  flat
+  per_game
+}
+
+enum CourtStatus {
+  available
+  in_match
+  maintenance
+}
+
+enum PlayerStatus {
+  checked_in
+  present
+  away
+  done
+}
+
+enum QueueType {
+  singles
+  doubles
+}
+
+enum QueueStatus {
+  queued
+  assigned
+  removed
+}
+
+enum MatchStatus {
+  proposed
+  active
+  ended
+  cancelled
+}
+
+enum MatchType {
+  singles
+  doubles
+}
+
+model Role {
+  id        String     @id @default(uuid()) @db.Uuid
+  name      RoleName   @unique
+  createdAt DateTime   @default(now())
+  users     UserRole[]
+
+  @@map("roles")
+}
+
+model User {
+  id           String     @id @default(uuid()) @db.Uuid
+  email        String     @unique
+  passwordHash String     @map("password_hash")
+  fullName     String?    @map("full_name")
+  emailVerifiedAt DateTime? @map("email_verified_at")
+  emailVerifyTokenHash String? @map("email_verify_token_hash")
+  emailVerifyTokenExpiresAt DateTime? @map("email_verify_token_expires_at")
+  passwordResetTokenHash String? @map("password_reset_token_hash")
+  passwordResetTokenExpiresAt DateTime? @map("password_reset_token_expires_at")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  roles        UserRole[]
+  sessions     Session[]  @relation("SessionCreator")
+  courts       Court[]    @relation("CourtCreator")
+  players      Player[]   @relation("PlayerCreator")
+
+  @@index([emailVerifyTokenHash])
+  @@index([passwordResetTokenHash])
+  @@map("users")
+}
+
+model UserRole {
+  userId String @db.Uuid @map("user_id")
+  roleId String @db.Uuid @map("role_id")
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  role   Role   @relation(fields: [roleId], references: [id], onDelete: Cascade)
+
+  @@id([userId, roleId])
+  @@map("user_roles")
+}
+
+model Session {
+  id             String           @id @default(uuid()) @db.Uuid
+  name           String
+  startsAt       DateTime?        @map("starts_at")
+  endsAt         DateTime?        @map("ends_at")
+  status         SessionStatus
+  gameType       MatchType        @default(doubles) @map("game_type")
+  feeMode        FeeMode          @map("fee_mode")
+  feeAmount      Decimal          @default(0) @map("fee_amount") @db.Decimal(10,2)
+  defaultBracketType String?      @map("default_bracket_type")
+  regularJoinLimit Int            @default(0) @map("regular_join_limit")
+  newJoinerLimit   Int            @default(0) @map("new_joiner_limit")
+  returnToQueue  Boolean          @default(true) @map("return_to_queue")
+  announcements  String?
+  createdBy      String?          @db.Uuid @map("created_by")
+  createdAt      DateTime         @default(now()) @map("created_at")
+  closedAt       DateTime?        @map("closed_at")
+
+  creator        User?            @relation("SessionCreator", fields: [createdBy], references: [id])
+  courtSessions  CourtSession[]
+  sessionPlayers SessionPlayer[]
+  queueEntries   QueueEntry[]
+  matches        Match[]
+  payments       Payment[]
+  shareLinks     ShareLink[]
+  sessionShareLinks SessionShareLink[]
+  sessionInviteLinks SessionInviteLink[]
+  bracketOverrides BracketOverride[]
+
+  @@index([status])
+  @@map("sessions")
+}
+
+model BracketOverride {
+  id          String   @id @default(uuid()) @db.Uuid
+  sessionId   String   @db.Uuid @map("session_id")
+  matchId     String   @map("match_id")
+  bracketType String   @map("bracket_type")
+  matchFormat String   @map("match_format")
+  winnerId    String?  @map("winner_id")
+  scoreJson   Json?    @map("score_json")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, matchId, bracketType, matchFormat])
+  @@index([sessionId])
+  @@map("bracket_overrides")
+}
+
+model SessionInviteLink {
+  id        String   @id @default(uuid()) @db.Uuid
+  token     String   @unique
+  sessionId String   @db.Uuid @map("session_id")
+  revokedAt DateTime? @map("revoked_at")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("session_invite_links")
+}
+
+model Court {
+  id        String         @id @default(uuid()) @db.Uuid
+  name      String
+  notes     String?
+  active    Boolean        @default(true)
+  createdBy String?        @db.Uuid @map("created_by")
+  createdAt DateTime       @default(now()) @map("created_at")
+  deletedAt DateTime?      @map("deleted_at")
+
+  creator       User?         @relation("CourtCreator", fields: [createdBy], references: [id])
+  courtSessions CourtSession[]
+
+  @@index([createdBy])
+  @@map("courts")
+}
+
+model CourtSession {
+  id             String      @id @default(uuid()) @db.Uuid
+  sessionId      String      @db.Uuid @map("session_id")
+  courtId        String      @db.Uuid @map("court_id")
+  status         CourtStatus
+  currentMatchId String?     @db.Uuid @map("current_match_id")
+  nextMatchId    String?     @db.Uuid @map("next_match_id")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  session   Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  court     Court   @relation(fields: [courtId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, courtId])
+  @@index([sessionId])
+  @@map("court_sessions")
+}
+
+model Player {
+  id        String          @id @default(uuid()) @db.Uuid
+  fullName  String          @map("full_name")
+  nickname  String?
+  skillLevel String?        @map("skill_level")
+  contact   String?
+  createdBy String?         @db.Uuid @map("created_by")
+  createdAt DateTime        @default(now()) @map("created_at")
+  deletedAt DateTime?       @map("deleted_at")
+
+  creator        User?          @relation("PlayerCreator", fields: [createdBy], references: [id])
+  sessionPlayers    SessionPlayer[]
+  queueEntryPlayers QueueEntryPlayer[]
+  matchParticipants MatchParticipant[]
+  payments          Payment[]
+  shareLinks        ShareLink[]
+
+  @@index([createdBy])
+  @@map("players")
+}
+
+model SessionPlayer {
+  id               String        @id @default(uuid()) @db.Uuid
+  sessionId        String        @db.Uuid @map("session_id")
+  playerId         String        @db.Uuid @map("player_id")
+  status           PlayerStatus
+  isNewPlayer      Boolean       @default(false) @map("is_new_player")
+  checkedInAt      DateTime      @default(now()) @map("checked_in_at")
+  lastPlayedAt     DateTime?     @map("last_played_at")
+  gamesPlayed      Int           @default(0) @map("games_played")
+  wins             Int           @default(0)
+  losses           Int           @default(0)
+  totalQueueSeconds Int          @default(0) @map("total_queue_seconds")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  player  Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([sessionId, playerId])
+  @@map("session_players")
+}
+
+model QueueEntry {
+  id        String      @id @default(uuid()) @db.Uuid
+  sessionId String      @db.Uuid @map("session_id")
+  type      QueueType
+  status    QueueStatus
+  position  Int
+  manualOrder Boolean   @default(false) @map("manual_order")
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  session   Session            @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  players   QueueEntryPlayer[]
+
+  @@index([sessionId])
+  @@index([sessionId, position])
+  @@map("queue_entries")
+}
+
+model QueueEntryPlayer {
+  entryId  String @db.Uuid @map("entry_id")
+  playerId String @db.Uuid @map("player_id")
+  entry    QueueEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  player   Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@id([entryId, playerId])
+  @@map("queue_entry_players")
+}
+
+model Match {
+  id             String      @id @default(uuid()) @db.Uuid
+  sessionId      String      @db.Uuid @map("session_id")
+  courtSessionId String?     @db.Uuid @map("court_session_id")
+  status         MatchStatus
+  matchType      MatchType   @map("match_type")
+  startedAt      DateTime?   @map("started_at")
+  endedAt        DateTime?   @map("ended_at")
+  scoreJson      Json?       @map("score_json")
+  winnerTeam     Int?        @map("winner_team")
+  createdAt      DateTime    @default(now()) @map("created_at")
+
+  session      Session            @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  participants MatchParticipant[]
+
+  @@index([sessionId])
+  @@map("matches")
+}
+
+model MatchParticipant {
+  matchId    String @db.Uuid @map("match_id")
+  playerId   String @db.Uuid @map("player_id")
+  teamNumber Int    @map("team_number")
+
+  match  Match  @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@id([matchId, playerId])
+  @@map("match_participants")
+}
+
+model Payment {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String   @db.Uuid @map("session_id")
+  playerId  String   @db.Uuid @map("player_id")
+  amount    Decimal  @db.Decimal(10,2)
+  method    String
+  note      String?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  player  Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, playerId])
+  @@map("payments")
+}
+
+model ShareLink {
+  id        String   @id @default(uuid()) @db.Uuid
+  token     String   @unique
+  sessionId String   @db.Uuid @map("session_id")
+  playerId  String   @db.Uuid @map("player_id")
+  revokedAt DateTime? @map("revoked_at")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  player  Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@map("share_links")
+}
+
+model SessionShareLink {
+  id        String   @id @default(uuid()) @db.Uuid
+  token     String   @unique
+  sessionId String   @db.Uuid @map("session_id")
+  revokedAt DateTime? @map("revoked_at")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@map("session_share_links")
+}
