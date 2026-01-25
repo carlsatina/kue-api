@@ -1,0 +1,34 @@
+# Node
+node_modules/
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Env
+.env
+.env.*
+!.env.example
+
+# Build
+dist/
+
+# Vite
+.vite/
+
+# Prisma
+prisma/migrations/
+prisma/.cache/
+
+# OS / Editor
+.DS_Store
+.idea/
+.vscode/
+
+# Coverage
+coverage/
+
+# Misc
+*.log
