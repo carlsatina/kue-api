@@ -13,7 +13,22 @@ import publicRoutes from "./routes/public.js";
 
 const app = express();
 
-app.use(cors());
+const defaultOrigins = ["https://kue.arshii.net"];
+const rawOrigins = process.env.CORS_ORIGINS;
+const parsedOrigins = rawOrigins
+  ? rawOrigins.split(",").map((origin) => origin.trim()).filter(Boolean)
+  : defaultOrigins;
+const corsOrigins = parsedOrigins.includes("*") ? "*" : parsedOrigins;
+
+const corsOptions = {
+  origin: corsOrigins,
+  methods: ["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
+  credentials: true
+};
+
+app.use(cors(corsOptions));
+app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
 
 app.get("/health", (req, res) => {
