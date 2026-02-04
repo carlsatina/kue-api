@@ -28,7 +28,7 @@ router.get("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (r
   const entries = await prisma.queueEntry.findMany({
     where: { sessionId, status: "queued" },
     orderBy: { position: "asc" },
-    include: { players: { include: { player: true } } }
+    include: { players: { include: { player: { include: { team: true } } } } }
   });
   res.json(entries);
 });
@@ -57,6 +57,24 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
   });
   if (ownedPlayers !== playerIds.length) {
     return res.status(404).json({ error: "Player not found" });
+  }
+
+  if (session.mode === "tournament") {
+    const players = await prisma.player.findMany({
+      where: { id: { in: playerIds }, createdBy: req.user.id, deletedAt: null },
+      select: { id: true, teamId: true }
+    });
+    const missingTeam = players.filter((p) => !p.teamId);
+    if (missingTeam.length) {
+      return res.status(409).json({ error: "Players must belong to a team in tournament mode" });
+    }
+    if (type === "doubles") {
+      const teamId = players[0]?.teamId || null;
+      const sameTeam = teamId && players.every((p) => p.teamId === teamId);
+      if (!sameTeam) {
+        return res.status(409).json({ error: "Doubles teams must be from the same team" });
+      }
+    }
   }
 
   const existing = await prisma.queueEntryPlayer.findMany({
@@ -88,7 +106,7 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
 
   const fullEntry = await prisma.queueEntry.findUnique({
     where: { id: entry.id },
-    include: { players: { include: { player: true } } }
+    include: { players: { include: { player: { include: { team: true } } } } }
   });
 
   res.json(fullEntry);
@@ -167,7 +185,7 @@ router.post("/:sessionId/reorder", requireAuth, requireRole(["admin", "staff"]),
   const entries = await prisma.queueEntry.findMany({
     where: { sessionId, status: "queued" },
     orderBy: { position: "asc" },
-    include: { players: { include: { player: true } } }
+    include: { players: { include: { player: { include: { team: true } } } } }
   });
   res.json(entries);
 });

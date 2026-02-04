@@ -37,7 +37,7 @@ const cancelSchema = z.object({
 router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const match = await prisma.match.findFirst({
     where: { id: req.params.id, session: { createdBy: req.user.id } },
-    include: { participants: { include: { player: true } } }
+    include: { participants: { include: { player: { include: { team: true } } } } }
   });
   if (!match) {
     return res.status(404).json({ error: "Match not found" });
@@ -82,12 +82,46 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
     return res.status(404).json({ error: "Court session not found" });
   }
 
+  if (matchType === "singles") {
+    if (teams.some((team) => team.length !== 1)) {
+      return res.status(400).json({ error: "Singles requires 1 player per team" });
+    }
+  }
+  if (matchType === "doubles") {
+    if (teams.some((team) => team.length !== 2)) {
+      return res.status(400).json({ error: "Doubles requires 2 players per team" });
+    }
+  }
+
   const allPlayerIds = teams.flat();
   const ownedPlayers = await prisma.player.count({
     where: { id: { in: allPlayerIds }, createdBy: req.user.id, deletedAt: null }
   });
   if (ownedPlayers !== allPlayerIds.length) {
     return res.status(404).json({ error: "Player not found" });
+  }
+
+  let teamIds = [null, null];
+  if (session.mode === "tournament") {
+    const players = await prisma.player.findMany({
+      where: { id: { in: allPlayerIds }, createdBy: req.user.id, deletedAt: null },
+      select: { id: true, teamId: true }
+    });
+    const teamMap = new Map(players.map((player) => [player.id, player.teamId]));
+    const resolveTeamId = (team) => {
+      const ids = team.map((playerId) => teamMap.get(playerId) || null);
+      if (ids.some((id) => !id)) return null;
+      const unique = new Set(ids);
+      if (unique.size !== 1) return null;
+      return ids[0];
+    };
+    teamIds = teams.map(resolveTeamId);
+    if (teamIds.some((id) => !id)) {
+      return res.status(409).json({ error: "Teams must belong to a single team in tournament mode" });
+    }
+    if (teamIds[0] === teamIds[1]) {
+      return res.status(409).json({ error: "Teams must be different in tournament mode" });
+    }
   }
 
   const match = await prisma.match.create({
@@ -101,7 +135,12 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
   });
 
   const participants = teams.flatMap((team, idx) =>
-    team.map((playerId) => ({ matchId: match.id, playerId, teamNumber: idx + 1 }))
+    team.map((playerId) => ({
+      matchId: match.id,
+      playerId,
+      teamNumber: idx + 1,
+      teamId: session.mode === "tournament" ? teamIds[idx] : null
+    }))
   );
 
   await prisma.matchParticipant.createMany({ data: participants });

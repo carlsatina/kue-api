@@ -139,6 +139,133 @@ router.get("/queue/:token/rankings", async (req, res) => {
   });
 });
 
+router.get("/queue/:token/team-stats", async (req, res) => {
+  const { token } = req.params;
+  const link = await prisma.sessionShareLink.findUnique({
+    where: { token },
+    include: { session: true }
+  });
+
+  if (!link || link.revokedAt) {
+    return res.status(404).json({ error: "Link not found" });
+  }
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "Link expired" });
+  }
+
+  const session = link.session;
+  if (session.mode !== "tournament") {
+    return res.json({
+      session: { id: session.id, name: session.name, mode: session.mode },
+      scope: "all",
+      totalTeams: 0,
+      teams: [],
+      champion: null
+    });
+  }
+
+  const ownerId = session.createdBy || null;
+  const matchWhere = ownerId
+    ? {
+        status: "ended",
+        session: { createdBy: ownerId, mode: "tournament" }
+      }
+    : { sessionId: session.id, status: "ended" };
+
+  const matches = await prisma.match.findMany({
+    where: matchWhere,
+    include: { participants: { include: { team: true } } }
+  });
+
+  const stats = new Map();
+  const teamInfo = new Map();
+  const ensureTeam = (teamId) => {
+    if (stats.has(teamId)) return stats.get(teamId);
+    const info = teamInfo.get(teamId) || {};
+    const entry = {
+      id: teamId,
+      name: info.name || "Team",
+      color: info.color || null,
+      gamesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      points: 0,
+      winPct: 0,
+      rank: 0
+    };
+    stats.set(teamId, entry);
+    return entry;
+  };
+
+  const resolveTeamId = (participants, teamNumber) => {
+    const ids = participants
+      .filter((p) => p.teamNumber === teamNumber)
+      .map((p) => p.teamId)
+      .filter(Boolean);
+    if (!ids.length) return null;
+    const unique = new Set(ids);
+    if (unique.size !== 1) return null;
+    return ids[0];
+  };
+
+  matches.forEach((match) => {
+    if (match.winnerTeam !== 1 && match.winnerTeam !== 2) return;
+    match.participants.forEach((participant) => {
+      if (participant.teamId && participant.team) {
+        teamInfo.set(participant.teamId, {
+          name: participant.team.name,
+          color: participant.team.color
+        });
+      }
+    });
+
+    const team1Id = resolveTeamId(match.participants, 1);
+    const team2Id = resolveTeamId(match.participants, 2);
+    if (!team1Id || !team2Id) return;
+    if (team1Id === team2Id) return;
+
+    const team1 = ensureTeam(team1Id);
+    const team2 = ensureTeam(team2Id);
+
+    team1.gamesPlayed += 1;
+    team2.gamesPlayed += 1;
+
+    if (match.winnerTeam === 1) {
+      team1.wins += 1;
+      team2.losses += 1;
+      team1.points += 10;
+      team2.points += 6;
+    } else if (match.winnerTeam === 2) {
+      team2.wins += 1;
+      team1.losses += 1;
+      team2.points += 10;
+      team1.points += 6;
+    }
+  });
+
+  const rows = [...stats.values()].map((team) => ({
+    ...team,
+    winPct: team.gamesPlayed ? team.wins / team.gamesPlayed : 0
+  }));
+
+  rows.sort((a, b) => {
+    if (b.wins !== a.wins) return b.wins - a.wins;
+    if (b.points !== a.points) return b.points - a.points;
+    return a.name.localeCompare(b.name);
+  });
+
+  const ranked = rows.map((team, idx) => ({ ...team, rank: idx + 1 }));
+  const champion = ranked[0] || null;
+
+  res.json({
+    session: { id: session.id, name: session.name, mode: session.mode },
+    scope: ownerId ? "all" : "session",
+    totalTeams: ranked.length,
+    teams: ranked,
+    champion
+  });
+});
+
 router.get("/queue/:token/bracket", async (req, res) => {
   const { token } = req.params;
   const link = await prisma.sessionShareLink.findUnique({
@@ -163,7 +290,7 @@ router.get("/queue/:token/bracket", async (req, res) => {
 
   const matches = await prisma.match.findMany({
     where: { sessionId: session.id },
-    include: { participants: { include: { player: true } } }
+    include: { participants: { include: { player: true, team: true } } }
   });
 
   const overrides = await prisma.bracketOverride.findMany({
@@ -176,7 +303,8 @@ router.get("/queue/:token/bracket", async (req, res) => {
       id: session.id,
       name: session.name,
       gameType: session.gameType,
-      defaultBracketType: session.defaultBracketType
+      defaultBracketType: session.defaultBracketType,
+      mode: session.mode
     },
     players: sessionPlayers,
     matches,
@@ -229,7 +357,8 @@ router.get("/queue/:token", async (req, res) => {
       id: session.id,
       name: session.name,
       gameType: session.gameType,
-      defaultBracketType: session.defaultBracketType
+      defaultBracketType: session.defaultBracketType,
+      mode: session.mode
     },
     courts,
     queue: queueEntries

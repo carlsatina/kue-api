@@ -10,6 +10,7 @@ const createSchema = z.object({
   name: z.string().min(1),
   startsAt: z.string().datetime().optional(),
   endsAt: z.string().datetime().optional(),
+  mode: z.enum(["usual", "tournament"]).default("usual"),
   gameType: z.enum(["singles", "doubles"]).default("doubles"),
   defaultBracketType: z.enum(["single", "double", "round_robin"]).optional(),
   feeMode: z.enum(["flat", "per_game"]).default("flat"),
@@ -27,6 +28,7 @@ const feeSchema = z.object({
 
 const updateSessionSchema = z.object({
   name: z.string().min(1).optional(),
+  mode: z.enum(["usual", "tournament"]).optional(),
   gameType: z.enum(["singles", "doubles"]).optional(),
   defaultBracketType: z.enum(["single", "double", "round_robin"]).nullable().optional(),
   feeAmount: z.number().nonnegative().optional(),
@@ -61,6 +63,7 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
       endsAt: data.endsAt ? new Date(data.endsAt) : null,
       feeMode: data.feeMode,
       feeAmount: data.feeAmount,
+      mode: data.mode,
       gameType: data.gameType,
       defaultBracketType: data.defaultBracketType ?? null,
       regularJoinLimit: data.regularJoinLimit,
@@ -156,7 +159,7 @@ router.get("/active", requireAuth, requireRole(["admin", "staff"]), async (req, 
   const matches = matchIds.length
     ? await prisma.match.findMany({
         where: { id: { in: matchIds } },
-        include: { participants: { include: { player: true } } }
+        include: { participants: { include: { player: { include: { team: true } } } } }
       })
     : [];
 
@@ -203,7 +206,7 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
   const matches = matchIds.length
     ? await prisma.match.findMany({
         where: { id: { in: matchIds } },
-        include: { participants: { include: { player: true } } }
+        include: { participants: { include: { player: { include: { team: true } } } } }
       })
     : [];
 
@@ -252,6 +255,7 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   const data = parse.data;
   const updates = {
     name: data.name,
+    mode: data.mode,
     gameType: data.gameType,
     defaultBracketType: data.defaultBracketType,
     feeAmount: data.feeAmount,
@@ -284,7 +288,7 @@ router.get("/:id/players", requireAuth, requireRole(["admin", "staff"]), async (
   }
   const sessionPlayers = await prisma.sessionPlayer.findMany({
     where: { sessionId: id },
-    include: { player: true }
+    include: { player: { include: { team: true } } }
   });
   res.json(sessionPlayers);
 });
@@ -297,7 +301,7 @@ router.get("/:id/rankings", requireAuth, requireRole(["admin", "staff"]), async 
   }
   const sessionPlayers = await prisma.sessionPlayer.findMany({
     where: { sessionId: id },
-    include: { player: true }
+    include: { player: { include: { team: true } } }
   });
 
   const ranked = sessionPlayers
@@ -321,6 +325,124 @@ router.get("/:id/rankings", requireAuth, requireRole(["admin", "staff"]), async 
     .map((item, idx) => ({ ...item, rank: idx + 1 }));
 
   res.json({ sessionId: id, totalPlayers: ranked.length, players: ranked });
+});
+
+router.get("/:id/team-stats", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
+  const { id } = req.params;
+  const scope = String(req.query.scope || "").toLowerCase();
+  const isAllScope = scope === "all";
+  const session = await findSessionForUser(id, req.user.id);
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+  if (session.mode !== "tournament") {
+    return res.json({
+      sessionId: id,
+      scope: isAllScope ? "all" : "session",
+      mode: session.mode,
+      totalTeams: 0,
+      teams: [],
+      champion: null
+    });
+  }
+
+  const matches = await prisma.match.findMany({
+    where: isAllScope
+      ? {
+          status: "ended",
+          session: { createdBy: req.user.id, mode: "tournament" }
+        }
+      : { sessionId: id, status: "ended" },
+    include: { participants: { include: { team: true } } }
+  });
+
+  const stats = new Map();
+  const teamInfo = new Map();
+  const ensureTeam = (teamId) => {
+    if (stats.has(teamId)) return stats.get(teamId);
+    const info = teamInfo.get(teamId) || {};
+    const entry = {
+      id: teamId,
+      name: info.name || "Team",
+      color: info.color || null,
+      gamesPlayed: 0,
+      wins: 0,
+      losses: 0,
+      points: 0,
+      winPct: 0,
+      rank: 0
+    };
+    stats.set(teamId, entry);
+    return entry;
+  };
+  const resolveTeamId = (participants, teamNumber) => {
+    const ids = participants
+      .filter((p) => p.teamNumber === teamNumber)
+      .map((p) => p.teamId)
+      .filter(Boolean);
+    if (!ids.length) return null;
+    const unique = new Set(ids);
+    if (unique.size !== 1) return null;
+    return ids[0];
+  };
+
+  matches.forEach((match) => {
+    if (match.winnerTeam !== 1 && match.winnerTeam !== 2) return;
+    match.participants.forEach((participant) => {
+      if (participant.teamId && participant.team) {
+        teamInfo.set(participant.teamId, {
+          name: participant.team.name,
+          color: participant.team.color
+        });
+      }
+    });
+
+    const team1Id = resolveTeamId(match.participants, 1);
+    const team2Id = resolveTeamId(match.participants, 2);
+    if (!team1Id || !team2Id) return;
+    if (team1Id === team2Id) return;
+
+    const team1 = ensureTeam(team1Id);
+    const team2 = ensureTeam(team2Id);
+
+    team1.gamesPlayed += 1;
+    team2.gamesPlayed += 1;
+
+    if (match.winnerTeam === 1) {
+      team1.wins += 1;
+      team2.losses += 1;
+      team1.points += 10;
+      team2.points += 6;
+    } else if (match.winnerTeam === 2) {
+      team2.wins += 1;
+      team1.losses += 1;
+      team2.points += 10;
+      team1.points += 6;
+    }
+  });
+
+  const rows = [...stats.values()].map((team) => ({
+    ...team,
+    winPct: team.gamesPlayed ? team.wins / team.gamesPlayed : 0
+  }));
+
+  rows.sort((a, b) => {
+    if (b.wins !== a.wins) return b.wins - a.wins;
+    if (b.points !== a.points) return b.points - a.points;
+    return a.name.localeCompare(b.name);
+  });
+
+  const ranked = rows.map((team, idx) => ({ ...team, rank: idx + 1 }));
+  const champion = ranked[0] || null;
+
+  res.json({
+    sessionId: id,
+    scope: isAllScope ? "all" : "session",
+    mode: session.mode,
+    totalTeams: ranked.length,
+    teams: ranked,
+    champion
+  });
 });
 
 router.get("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {

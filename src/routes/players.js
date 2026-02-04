@@ -35,7 +35,8 @@ const checkoutSchema = z.object({
 
 router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const players = await prisma.player.findMany({
-    where: { deletedAt: null, createdBy: req.user.id }
+    where: { deletedAt: null, createdBy: req.user.id },
+    include: { team: true }
   });
   res.json(players);
 });

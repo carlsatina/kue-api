@@ -30,7 +30,7 @@ router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) =
   res.json(courts);
 });
 
-router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
+router.post("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const parse = createSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });

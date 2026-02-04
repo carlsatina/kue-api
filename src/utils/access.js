@@ -21,6 +21,13 @@ export async function findPlayerForUser(playerId, userId) {
   });
 }
 
+export async function findTeamForUser(teamId, userId) {
+  if (!teamId || !userId) return null;
+  return prisma.team.findFirst({
+    where: { id: teamId, createdBy: userId, deletedAt: null }
+  });
+}
+
 export async function findShareLinkForUser(linkId, userId) {
   if (!linkId || !userId) return null;
   return prisma.shareLink.findFirst({

@@ -12,9 +12,12 @@ function computeFairnessScore({ now, queuedAt, lastPlayedAt }) {
 }
 
 export async function suggestMatch(sessionId, matchType) {
+  const session = await prisma.session.findUnique({ where: { id: sessionId } });
+  if (!session) return null;
+
   const entries = await prisma.queueEntry.findMany({
     where: { sessionId, status: "queued", type: matchType },
-    include: { players: true },
+    include: { players: { include: { player: true } } },
     orderBy: { position: "asc" }
   });
 
@@ -25,9 +28,32 @@ export async function suggestMatch(sessionId, matchType) {
     sessionPlayers.map((sp) => [sp.playerId, sp])
   );
 
-  const eligible = entries.filter((entry) =>
-    entry.players.every((p) => playerMap.get(p.playerId)?.status === "checked_in")
-  );
+  const isTournament = session.mode === "tournament";
+  const teamIdCache = new Map();
+  const entryTeamId = (entry) => {
+    if (teamIdCache.has(entry.id)) return teamIdCache.get(entry.id);
+    const teamIds = entry.players.map((p) => p.player?.teamId || null);
+    if (teamIds.some((id) => !id)) {
+      teamIdCache.set(entry.id, null);
+      return null;
+    }
+    const unique = new Set(teamIds);
+    if (unique.size !== 1) {
+      teamIdCache.set(entry.id, null);
+      return null;
+    }
+    const teamId = teamIds[0];
+    teamIdCache.set(entry.id, teamId);
+    return teamId;
+  };
+
+  const eligible = entries.filter((entry) => {
+    if (!entry.players.every((p) => playerMap.get(p.playerId)?.status === "checked_in")) {
+      return false;
+    }
+    if (!isTournament) return true;
+    return Boolean(entryTeamId(entry));
+  });
 
   if (eligible.length < 2) return null;
 
@@ -64,7 +90,30 @@ export async function suggestMatch(sessionId, matchType) {
     });
   }
 
-  const [first, second] = sorted;
+  let first = null;
+  let second = null;
+  if (isTournament) {
+    for (let i = 0; i < sorted.length; i += 1) {
+      const candidate = sorted[i];
+      const teamA = entryTeamId(candidate);
+      if (!teamA) continue;
+      for (let j = i + 1; j < sorted.length; j += 1) {
+        const opponent = sorted[j];
+        const teamB = entryTeamId(opponent);
+        if (!teamB) continue;
+        if (teamA !== teamB) {
+          first = candidate;
+          second = opponent;
+          break;
+        }
+      }
+      if (first && second) break;
+    }
+  } else {
+    [first, second] = sorted;
+  }
+
+  if (!first || !second) return null;
   return {
     matchType,
     teams: [
