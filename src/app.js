@@ -13,12 +13,22 @@ import publicRoutes from "./routes/public.js";
 
 const app = express();
 
-const defaultOrigins = ["https://kue.arshii.net"];
+const defaultOrigins = [
+  "https://kue.arshii.net",
+  "http://localhost",
+  "http://localhost:5173",
+  "http://localhost:5174",
+  "capacitor://localhost",
+  "ionic://localhost"
+];
 const rawOrigins = process.env.CORS_ORIGINS;
 const parsedOrigins = rawOrigins
   ? rawOrigins.split(",").map((origin) => origin.trim()).filter(Boolean)
-  : defaultOrigins;
-const corsOrigins = parsedOrigins.includes("*") ? "*" : parsedOrigins;
+  : [];
+const mergedOrigins = parsedOrigins.includes("*")
+  ? ["*"]
+  : [...new Set([...defaultOrigins, ...parsedOrigins])];
+const corsOrigins = mergedOrigins.includes("*") ? "*" : mergedOrigins;
 
 const corsOptions = {
   origin: corsOrigins,
