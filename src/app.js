@@ -15,8 +15,11 @@ const app = express();
 
 const defaultOrigins = [
   "https://kue.arshii.net",
+  "https://localhost",
   "http://localhost",
+  "https://localhost:5173",
   "http://localhost:5173",
+  "https://localhost:5174",
   "http://localhost:5174",
   "capacitor://localhost",
   "ionic://localhost"
