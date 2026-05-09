@@ -1,5 +1,7 @@
 import express from "express";
 import cors from "cors";
+import { fileURLToPath } from "url";
+import { dirname, join } from "path";
 import authRoutes from "./routes/auth.js";
 import sessionRoutes from "./routes/sessions.js";
 import courtRoutes from "./routes/courts.js";
@@ -12,6 +14,8 @@ import shareRoutes from "./routes/shareLinks.js";
 import publicRoutes from "./routes/public.js";
 
 const app = express();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 const defaultOrigins = [
   "https://kue.arshii.net",
@@ -43,6 +47,7 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options("*", cors(corsOptions));
 app.use(express.json({ limit: "1mb" }));
+app.use("/uploads", express.static(join(__dirname, "../uploads")));
 
 app.get("/health", (req, res) => {
   res.json({ status: "ok" });

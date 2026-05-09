@@ -1,5 +1,9 @@
 import express from "express";
+import { join } from "path";
+import { randomUUID } from "crypto";
+import { writeFile } from "fs/promises";
 import prisma from "../lib/prisma.js";
+import { upload, compressToTarget, PROOFS_DIR } from "../lib/imageUpload.js";
 
 const router = express.Router();
 
@@ -431,6 +435,114 @@ router.get("/session-invite/:token/players", async (req, res) => {
     }))
   });
 });
+
+// ── Public Fees (session-scoped) ──────────────────────────────────────────────
+
+async function resolveSessionLink(token) {
+  const link = await prisma.sessionShareLink.findUnique({
+    where: { token },
+    include: { session: true }
+  });
+  if (!link || link.revokedAt) return null;
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) return null;
+  return link;
+}
+
+function buildPlayerBalance(session, sp, payments) {
+  const mine = payments.filter((p) => p.playerId === sp.playerId);
+  const paid = mine.filter((p) => p.status === "confirmed").reduce((sum, p) => sum + Number(p.amount), 0);
+  const due = session.feeMode === "flat"
+    ? Number(session.feeAmount)
+    : Number(session.feeAmount) * sp.gamesPlayed;
+  const sorted = mine.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+  const pending  = sorted.find((p) => p.status === "pending")  || null;
+  const rejected = sorted.find((p) => p.status === "rejected") || null;
+  const fmt = (p) => p ? { id: p.id, method: p.method, proofImageUrl: p.proofImageUrl, createdAt: p.createdAt } : null;
+  return {
+    playerId: sp.playerId,
+    player: { id: sp.player.id, fullName: sp.player.fullName, nickname: sp.player.nickname },
+    due,
+    paid,
+    remaining: Math.max(0, due - paid),
+    pendingPayment: fmt(pending),
+    rejectedPayment: fmt(rejected)
+  };
+}
+
+router.get("/fees-session/:token", async (req, res) => {
+  const link = await resolveSessionLink(req.params.token);
+  if (!link) return res.status(404).json({ error: "Link not found or expired" });
+
+  const { session } = link;
+  const sessionPlayers = await prisma.sessionPlayer.findMany({
+    where: { sessionId: session.id },
+    include: { player: true }
+  });
+  const payments = await prisma.payment.findMany({ where: { sessionId: session.id } });
+
+  const balances = sessionPlayers.map((sp) => buildPlayerBalance(session, sp, payments));
+
+  res.json({
+    session: { id: session.id, name: session.name },
+    balances
+  });
+});
+
+router.post("/fees-session/:token/proof", upload.single("proof"), async (req, res) => {
+  const link = await resolveSessionLink(req.params.token);
+  if (!link) return res.status(404).json({ error: "Link not found or expired" });
+
+  const { session } = link;
+  const { playerId, method: rawMethod } = req.body || {};
+
+  if (!playerId || typeof playerId !== "string") {
+    return res.status(400).json({ error: "playerId is required" });
+  }
+
+  const sp = await prisma.sessionPlayer.findUnique({
+    where: { sessionId_playerId: { sessionId: session.id, playerId } }
+  });
+  if (!sp) return res.status(404).json({ error: "Player not in this session" });
+
+  const payments = await prisma.payment.findMany({ where: { sessionId: session.id, playerId } });
+  const paid = payments.filter((p) => p.status === "confirmed").reduce((s, p) => s + Number(p.amount), 0);
+  const due = session.feeMode === "flat"
+    ? Number(session.feeAmount)
+    : Number(session.feeAmount) * sp.gamesPlayed;
+  const remaining = Math.max(0, due - paid);
+
+  if (remaining <= 0) return res.status(409).json({ error: "No outstanding balance" });
+
+  const alreadyPending = payments.some((p) => p.playerId === playerId && p.status === "pending");
+  if (alreadyPending) return res.status(409).json({ error: "A proof is already pending admin review" });
+
+  if (!req.file) return res.status(400).json({ error: "Proof image is required" });
+
+  const method = typeof rawMethod === "string" && rawMethod.trim() ? rawMethod.trim() : "online";
+  const compressed = await compressToTarget(req.file.buffer);
+  const filename = `${randomUUID()}.jpg`;
+  await writeFile(join(PROOFS_DIR, filename), compressed);
+
+  const payment = await prisma.payment.create({
+    data: {
+      sessionId: session.id,
+      playerId,
+      amount: remaining,
+      method,
+      proofImageUrl: `/uploads/proofs/${filename}`,
+      status: "pending"
+    }
+  });
+
+  res.json({
+    id: payment.id,
+    method: payment.method,
+    proofImageUrl: payment.proofImageUrl,
+    createdAt: payment.createdAt
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 router.post("/session-invite/:token/register", async (req, res) => {
   const { token } = req.params;

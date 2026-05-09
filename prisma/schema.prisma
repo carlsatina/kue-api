@@ -327,14 +327,22 @@ model MatchParticipant {
   @@map("match_participants")
 }
 
+enum PaymentStatus {
+  pending
+  confirmed
+  rejected
+}
+
 model Payment {
-  id        String   @id @default(uuid()) @db.Uuid
-  sessionId String   @db.Uuid @map("session_id")
-  playerId  String   @db.Uuid @map("player_id")
-  amount    Decimal  @db.Decimal(10,2)
-  method    String
-  note      String?
-  createdAt DateTime @default(now()) @map("created_at")
+  id            String        @id @default(uuid()) @db.Uuid
+  sessionId     String        @db.Uuid @map("session_id")
+  playerId      String        @db.Uuid @map("player_id")
+  amount        Decimal       @db.Decimal(10,2)
+  method        String
+  note          String?
+  proofImageUrl String?       @map("proof_image_url")
+  status        PaymentStatus @default(confirmed)
+  createdAt     DateTime      @default(now()) @map("created_at")
 
   session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
   player  Player  @relation(fields: [playerId], references: [id], onDelete: Cascade)
