@@ -17,6 +17,7 @@ const paymentSchema = z.object({
 });
 
 router.get("/:sessionId/balances", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
+  try {
   const { sessionId } = req.params;
   const session = await findSessionForUser(sessionId, req.user.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
@@ -76,9 +77,14 @@ router.get("/:sessionId/balances", requireAuth, requireRole(["admin", "staff"]),
   });
 
   res.json({ sessionId, balances });
+  } catch (err) {
+    console.error("GET /balances error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.single("proof"), async (req, res) => {
+  try {
   const { sessionId } = req.params;
   const session = await findSessionForUser(sessionId, req.user.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
@@ -111,10 +117,15 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.
   });
 
   res.json(payment);
+  } catch (err) {
+    console.error("POST /payments error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // Confirm a pending payment (player-submitted proof)
 router.patch("/:sessionId/:paymentId/confirm", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
+  try {
   const { sessionId, paymentId } = req.params;
   const session = await findSessionForUser(sessionId, req.user.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
@@ -132,10 +143,15 @@ router.patch("/:sessionId/:paymentId/confirm", requireAuth, requireRole(["admin"
     data: { status: "confirmed" }
   });
   res.json(confirmed);
+  } catch (err) {
+    console.error("PATCH /confirm error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 // Reject a pending payment (marks as rejected so player can see and resubmit)
 router.patch("/:sessionId/:paymentId/reject", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
+  try {
   const { sessionId, paymentId } = req.params;
   const session = await findSessionForUser(sessionId, req.user.id);
   if (!session) return res.status(404).json({ error: "Session not found" });
@@ -153,6 +169,10 @@ router.patch("/:sessionId/:paymentId/reject", requireAuth, requireRole(["admin",
     data: { status: "rejected" }
   });
   res.json(rejected);
+  } catch (err) {
+    console.error("PATCH /reject error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
 });
 
 export default router;
