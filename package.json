@@ -11,6 +11,7 @@
     "prisma:seed": "prisma db seed"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1045.0",
     "@prisma/client": "^6.0.0",
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
@@ -20,6 +21,7 @@
     "multer": "^2.1.1",
     "resend": "^6.7.0",
     "sharp": "^0.34.5",
+    "tslib": "^2.8.1",
     "zod": "^3.23.8"
   },
   "devDependencies": {

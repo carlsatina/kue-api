@@ -1,10 +1,9 @@
 import express from "express";
 import { z } from "zod";
-import { join } from "path";
 import { randomUUID } from "crypto";
-import { writeFile } from "fs/promises";
 import prisma from "../lib/prisma.js";
-import { upload, compressToTarget, PROOFS_DIR } from "../lib/imageUpload.js";
+import { upload, compressToTarget } from "../lib/imageUpload.js";
+import { saveProof } from "../lib/storage.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { findPlayerForUser, findSessionForUser } from "../utils/access.js";
 
@@ -96,8 +95,7 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.
   if (req.file) {
     const compressed = await compressToTarget(req.file.buffer);
     const filename = `${randomUUID()}.jpg`;
-    await writeFile(join(PROOFS_DIR, filename), compressed);
-    proofImageUrl = `/uploads/proofs/${filename}`;
+    proofImageUrl = await saveProof(compressed, filename);
   }
 
   const payment = await prisma.payment.create({

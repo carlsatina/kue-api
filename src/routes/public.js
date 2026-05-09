@@ -1,9 +1,8 @@
 import express from "express";
-import { join } from "path";
 import { randomUUID } from "crypto";
-import { writeFile } from "fs/promises";
 import prisma from "../lib/prisma.js";
-import { upload, compressToTarget, PROOFS_DIR } from "../lib/imageUpload.js";
+import { upload, compressToTarget } from "../lib/imageUpload.js";
+import { saveProof } from "../lib/storage.js";
 
 const router = express.Router();
 
@@ -521,7 +520,7 @@ router.post("/fees-session/:token/proof", upload.single("proof"), async (req, re
   const method = typeof rawMethod === "string" && rawMethod.trim() ? rawMethod.trim() : "online";
   const compressed = await compressToTarget(req.file.buffer);
   const filename = `${randomUUID()}.jpg`;
-  await writeFile(join(PROOFS_DIR, filename), compressed);
+  const proofImageUrl = await saveProof(compressed, filename);
 
   const payment = await prisma.payment.create({
     data: {
@@ -529,7 +528,7 @@ router.post("/fees-session/:token/proof", upload.single("proof"), async (req, re
       playerId,
       amount: remaining,
       method,
-      proofImageUrl: `/uploads/proofs/${filename}`,
+      proofImageUrl,
       status: "pending"
     }
   });
