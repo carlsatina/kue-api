@@ -19,8 +19,6 @@ dist/
 .vite/
 
 # Prisma
-prisma/migrations/
-prisma/.cache/
 
 # OS / Editor
 .DS_Store
