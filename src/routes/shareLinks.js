@@ -3,6 +3,7 @@ import crypto from "crypto";
 import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
+import { appBaseUrl } from "../lib/appUrl.js";
 import {
   findPlayerForUser,
   findSessionForUser,
@@ -43,7 +44,7 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (
       expiresAt: parse.data.expiresAt ? new Date(parse.data.expiresAt) : null
     }
   });
-  res.json(link);
+  res.json({ ...link, appBaseUrl: appBaseUrl() });
 });
 
 router.post("/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
@@ -72,7 +73,7 @@ router.post("/session/:sessionId", requireAuth, requireRole(["admin", "staff"]),
       sessionId
     }
   });
-  res.json(link);
+  res.json({ ...link, appBaseUrl: appBaseUrl() });
 });
 
 router.post("/session/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
@@ -101,7 +102,7 @@ router.post("/session-invite/:sessionId", requireAuth, requireRole(["admin", "st
       sessionId
     }
   });
-  res.json(link);
+  res.json({ ...link, appBaseUrl: appBaseUrl() });
 });
 
 router.post("/session-invite/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
