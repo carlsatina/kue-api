@@ -59,6 +59,13 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
     return res.status(404).json({ error: "Player not found" });
   }
 
+  const heldForPayment = await prisma.sessionPlayer.count({
+    where: { sessionId, playerId: { in: playerIds }, status: { in: ["pending_payment", "waitlisted"] } }
+  });
+  if (heldForPayment > 0) {
+    return res.status(409).json({ error: "One or more players are awaiting payment confirmation" });
+  }
+
   if (session.mode === "tournament") {
     const players = await prisma.player.findMany({
       where: { id: { in: playerIds }, createdBy: req.user.id, deletedAt: null },

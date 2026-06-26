@@ -3,6 +3,7 @@ import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { findSessionForUser } from "../utils/access.js";
+import { reconcileGatedSession } from "../services/joinGate.js";
 
 const router = express.Router();
 
@@ -15,6 +16,8 @@ const createSchema = z.object({
   defaultBracketType: z.enum(["single", "double", "round_robin"]).optional(),
   feeMode: z.enum(["flat", "per_game"]).default("flat"),
   feeAmount: z.number().nonnegative().default(0),
+  requirePaymentToJoin: z.boolean().default(false),
+  paymentDeadline: z.string().datetime().nullable().optional(),
   regularJoinLimit: z.number().int().nonnegative().default(0),
   newJoinerLimit: z.number().int().nonnegative().default(0),
   returnToQueue: z.boolean().default(true),
@@ -32,6 +35,8 @@ const updateSessionSchema = z.object({
   gameType: z.enum(["singles", "doubles"]).optional(),
   defaultBracketType: z.enum(["single", "double", "round_robin"]).nullable().optional(),
   feeAmount: z.number().nonnegative().optional(),
+  requirePaymentToJoin: z.boolean().optional(),
+  paymentDeadline: z.string().datetime().nullable().optional(),
   regularJoinLimit: z.number().int().nonnegative().optional(),
   newJoinerLimit: z.number().int().nonnegative().optional(),
   announcements: z.string().optional()
@@ -63,6 +68,8 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
       endsAt: data.endsAt ? new Date(data.endsAt) : null,
       feeMode: data.feeMode,
       feeAmount: data.feeAmount,
+      requirePaymentToJoin: data.requirePaymentToJoin,
+      paymentDeadline: data.paymentDeadline ? new Date(data.paymentDeadline) : null,
       mode: data.mode,
       gameType: data.gameType,
       defaultBracketType: data.defaultBracketType ?? null,
@@ -190,6 +197,7 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
+  await reconcileGatedSession(id);
 
   const courtSessions = await prisma.courtSession.findMany({
     where: {
@@ -259,6 +267,10 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
     gameType: data.gameType,
     defaultBracketType: data.defaultBracketType,
     feeAmount: data.feeAmount,
+    requirePaymentToJoin: data.requirePaymentToJoin,
+    paymentDeadline: data.paymentDeadline === undefined
+      ? undefined
+      : (data.paymentDeadline ? new Date(data.paymentDeadline) : null),
     regularJoinLimit: data.regularJoinLimit,
     newJoinerLimit: data.newJoinerLimit,
     announcements: data.announcements

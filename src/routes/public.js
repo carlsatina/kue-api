@@ -3,6 +3,7 @@ import { randomUUID } from "crypto";
 import prisma from "../lib/prisma.js";
 import { upload, compressToTarget } from "../lib/imageUpload.js";
 import { saveProof } from "../lib/storage.js";
+import { reconcileGatedSession, getCapacityState, deadlinePassed } from "../services/joinGate.js";
 
 const router = express.Router();
 
@@ -382,13 +383,22 @@ router.get("/session-invite/:token", async (req, res) => {
     return res.status(410).json({ error: "Link expired" });
   }
 
+  await reconcileGatedSession(link.session.id);
+  const session = await prisma.session.findUnique({ where: { id: link.session.id } });
+  const { hasRoom } = await getCapacityState(session);
+
   res.json({
     session: {
-      id: link.session.id,
-      name: link.session.name,
-      status: link.session.status,
-      startsAt: link.session.startsAt,
-      endsAt: link.session.endsAt
+      id: session.id,
+      name: session.name,
+      status: session.status,
+      startsAt: session.startsAt,
+      endsAt: session.endsAt,
+      requirePaymentToJoin: session.requirePaymentToJoin,
+      fee: Number(session.feeAmount),
+      paymentDeadline: session.paymentDeadline,
+      deadlinePassed: deadlinePassed(session),
+      hasRoom
     }
   });
 });
@@ -408,7 +418,7 @@ router.get("/session-invite/:token/players", async (req, res) => {
   }
 
   const sessionPlayers = await prisma.sessionPlayer.findMany({
-    where: { sessionId: link.session.id, status: { not: "done" } },
+    where: { sessionId: link.session.id, status: { notIn: ["done", "pending_payment", "waitlisted"] } },
     include: { player: true },
     orderBy: { checkedInAt: "asc" }
   });
@@ -460,6 +470,8 @@ function buildPlayerBalance(session, sp, payments) {
   return {
     playerId: sp.playerId,
     player: { id: sp.player.id, fullName: sp.player.fullName, nickname: sp.player.nickname },
+    status: sp.status,
+    waitlisted: sp.status === "waitlisted",
     due,
     paid,
     remaining: Math.max(0, due - paid),
@@ -473,6 +485,7 @@ router.get("/fees-session/:token", async (req, res) => {
   if (!link) return res.status(404).json({ error: "Link not found or expired" });
 
   const { session } = link;
+  await reconcileGatedSession(session.id);
   const sessionPlayers = await prisma.sessionPlayer.findMany({
     where: { sessionId: session.id },
     include: { player: true }
@@ -480,9 +493,17 @@ router.get("/fees-session/:token", async (req, res) => {
   const payments = await prisma.payment.findMany({ where: { sessionId: session.id } });
 
   const balances = sessionPlayers.map((sp) => buildPlayerBalance(session, sp, payments));
+  const { hasRoom } = await getCapacityState(session);
 
   res.json({
-    session: { id: session.id, name: session.name },
+    session: {
+      id: session.id,
+      name: session.name,
+      requirePaymentToJoin: session.requirePaymentToJoin,
+      paymentDeadline: session.paymentDeadline,
+      deadlinePassed: deadlinePassed(session),
+      hasOpenSlot: hasRoom
+    },
     balances
   });
 });
@@ -498,10 +519,24 @@ router.post("/fees-session/:token/proof", upload.single("proof"), async (req, re
     return res.status(400).json({ error: "playerId is required" });
   }
 
+  await reconcileGatedSession(session.id);
+
   const sp = await prisma.sessionPlayer.findUnique({
     where: { sessionId_playerId: { sessionId: session.id, playerId } }
   });
   if (!sp) return res.status(404).json({ error: "Player not in this session" });
+
+  // Payment-gated sessions: a waitlisted player can only pay once a slot frees up.
+  if (session.requirePaymentToJoin && sp.status === "waitlisted") {
+    const { hasRoom } = await getCapacityState(session);
+    if (!hasRoom) {
+      return res.status(409).json({ error: "The session is full. You're on the waitlist." });
+    }
+    await prisma.sessionPlayer.update({
+      where: { sessionId_playerId: { sessionId: session.id, playerId } },
+      data: { status: "pending_payment" }
+    });
+  }
 
   const payments = await prisma.payment.findMany({ where: { sessionId: session.id, playerId } });
   const paid = payments.filter((p) => p.status === "confirmed").reduce((s, p) => s + Number(p.amount), 0);
@@ -603,20 +638,118 @@ router.post("/session-invite/:token/register", async (req, res) => {
     });
   }
 
+  await reconcileGatedSession(link.session.id);
+  const session = await prisma.session.findUnique({ where: { id: link.session.id } });
+
+  const existing = await prisma.sessionPlayer.findUnique({
+    where: { sessionId_playerId: { sessionId: session.id, playerId: player.id } }
+  });
+  const alreadyAdmitted = existing && ["checked_in", "present", "away", "done"].includes(existing.status);
+
+  let status;
+  if (!session.requirePaymentToJoin || alreadyAdmitted) {
+    status = "checked_in";
+  } else if (existing && existing.status === "pending_payment") {
+    status = "pending_payment";
+  } else {
+    // New joiner or currently waitlisted: claim a slot if one is free.
+    const { hasRoom } = await getCapacityState(session);
+    status = hasRoom ? "pending_payment" : "waitlisted";
+  }
+
   const sessionPlayer = await prisma.sessionPlayer.upsert({
-    where: { sessionId_playerId: { sessionId: link.session.id, playerId: player.id } },
-    update: { status: "checked_in", isNewPlayer },
+    where: { sessionId_playerId: { sessionId: session.id, playerId: player.id } },
+    update: { status, isNewPlayer },
     create: {
-      sessionId: link.session.id,
+      sessionId: session.id,
       playerId: player.id,
-      status: "checked_in",
+      status,
       isNewPlayer
     }
   });
 
   res.json({
     player: { id: player.id, fullName: player.fullName, nickname: player.nickname, contact: player.contact },
-    sessionPlayer
+    sessionPlayer,
+    status,
+    canPay: status === "pending_payment",
+    waitlisted: status === "waitlisted",
+    fee: Number(session.feeAmount),
+    paymentDeadline: session.paymentDeadline,
+    deadlinePassed: deadlinePassed(session)
+  });
+});
+
+router.post("/session-invite/:token/proof", upload.single("proof"), async (req, res) => {
+  const { token } = req.params;
+  const { playerId, method: rawMethod } = req.body || {};
+
+  if (!playerId || typeof playerId !== "string") {
+    return res.status(400).json({ error: "playerId is required" });
+  }
+
+  const link = await prisma.sessionInviteLink.findUnique({
+    where: { token },
+    include: { session: true }
+  });
+
+  if (!link || link.revokedAt) {
+    return res.status(404).json({ error: "Link not found" });
+  }
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "Link expired" });
+  }
+
+  await reconcileGatedSession(link.session.id);
+  const session = await prisma.session.findUnique({ where: { id: link.session.id } });
+
+  const sp = await prisma.sessionPlayer.findUnique({
+    where: { sessionId_playerId: { sessionId: session.id, playerId } }
+  });
+  if (!sp) return res.status(404).json({ error: "Player not in this session" });
+  if (["checked_in", "present", "away", "done"].includes(sp.status)) {
+    return res.status(409).json({ error: "You're already in this session" });
+  }
+
+  // Waitlisted players can only pay once a slot frees up (capacity permitting).
+  if (sp.status === "waitlisted") {
+    const { hasRoom } = await getCapacityState(session);
+    if (!hasRoom) {
+      return res.status(409).json({ error: "The session is full. You're on the waitlist." });
+    }
+    await prisma.sessionPlayer.update({
+      where: { sessionId_playerId: { sessionId: session.id, playerId } },
+      data: { status: "pending_payment" }
+    });
+  }
+
+  const payments = await prisma.payment.findMany({ where: { sessionId: session.id, playerId } });
+  const alreadyPending = payments.some((p) => p.status === "pending");
+  if (alreadyPending) return res.status(409).json({ error: "A proof is already pending admin review" });
+
+  if (!req.file) return res.status(400).json({ error: "Proof image is required" });
+
+  const method = typeof rawMethod === "string" && rawMethod.trim() ? rawMethod.trim() : "online";
+  const compressed = await compressToTarget(req.file.buffer);
+  const filename = `${randomUUID()}.jpg`;
+  const proofImageUrl = await saveProof(compressed, filename);
+
+  const payment = await prisma.payment.create({
+    data: {
+      sessionId: session.id,
+      playerId,
+      amount: Number(session.feeAmount),
+      method,
+      proofImageUrl,
+      status: "pending"
+    }
+  });
+
+  res.json({
+    id: payment.id,
+    method: payment.method,
+    proofImageUrl: payment.proofImageUrl,
+    createdAt: payment.createdAt
   });
 });
 

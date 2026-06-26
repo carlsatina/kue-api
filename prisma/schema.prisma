@@ -37,6 +37,8 @@ enum CourtStatus {
 }
 
 enum PlayerStatus {
+  pending_payment
+  waitlisted
   checked_in
   present
   away
@@ -117,6 +119,8 @@ model Session {
   gameType       MatchType        @default(doubles) @map("game_type")
   feeMode        FeeMode          @map("fee_mode")
   feeAmount      Decimal          @default(0) @map("fee_amount") @db.Decimal(10,2)
+  requirePaymentToJoin Boolean    @default(false) @map("require_payment_to_join")
+  paymentDeadline DateTime?       @map("payment_deadline")
   defaultBracketType String?      @map("default_bracket_type")
   regularJoinLimit Int            @default(0) @map("regular_join_limit")
   newJoinerLimit   Int            @default(0) @map("new_joiner_limit")

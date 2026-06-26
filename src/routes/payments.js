@@ -142,6 +142,13 @@ router.patch("/:sessionId/:paymentId/confirm", requireAuth, requireRole(["admin"
     where: { id: paymentId },
     data: { status: "confirmed" }
   });
+
+  // Admit players who were held awaiting payment once their proof is confirmed.
+  await prisma.sessionPlayer.updateMany({
+    where: { sessionId, playerId: payment.playerId, status: "pending_payment" },
+    data: { status: "checked_in" }
+  });
+
   res.json(confirmed);
   } catch (err) {
     console.error("PATCH /confirm error:", err);
