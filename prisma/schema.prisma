@@ -87,6 +87,7 @@ model User {
   emailVerifyTokenExpiresAt DateTime? @map("email_verify_token_expires_at")
   passwordResetTokenHash String? @map("password_reset_token_hash")
   passwordResetTokenExpiresAt DateTime? @map("password_reset_token_expires_at")
+  passwordChangedAt DateTime? @map("password_changed_at")
   createdAt    DateTime   @default(now()) @map("created_at")
   roles        UserRole[]
   sessions     Session[]  @relation("SessionCreator")

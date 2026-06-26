@@ -3,7 +3,9 @@ import { z } from "zod";
 import crypto from "crypto";
 import prisma from "../lib/prisma.js";
 import { hashPassword, verifyPassword } from "../utils/password.js";
-import { signToken } from "../utils/jwt.js";
+import { signToken, verifyToken } from "../utils/jwt.js";
+import { requireAuth } from "../middleware/auth.js";
+import { authLimiter } from "../middleware/rateLimit.js";
 import {
   generateResetToken,
   generateVerificationToken,
@@ -37,6 +39,11 @@ const resetSchema = z.object({
   password: z.string().min(6)
 });
 
+const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1),
+  newPassword: z.string().min(6)
+});
+
 async function ensureRoles() {
   await prisma.role.upsert({
     where: { name: "admin" },
@@ -58,7 +65,7 @@ async function getUserRoles(userId) {
   return roles.map((r) => r.role.name);
 }
 
-router.post("/register", async (req, res) => {
+router.post("/register", authLimiter, async (req, res) => {
   const parse = registerSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
@@ -111,7 +118,7 @@ router.post("/register", async (req, res) => {
   });
 });
 
-router.post("/login", async (req, res) => {
+router.post("/login", authLimiter, async (req, res) => {
   const parse = loginSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
@@ -175,7 +182,7 @@ router.get("/verify", async (req, res) => {
   return res.json({ verified: true });
 });
 
-router.post("/password/forgot", async (req, res) => {
+router.post("/password/forgot", authLimiter, async (req, res) => {
   const parse = resetRequestSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
@@ -200,7 +207,7 @@ router.post("/password/forgot", async (req, res) => {
   return res.json({ status: "ok" });
 });
 
-router.post("/password/reset", async (req, res) => {
+router.post("/password/reset", authLimiter, async (req, res) => {
   const parse = resetSchema.safeParse(req.body);
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
@@ -222,12 +229,67 @@ router.post("/password/reset", async (req, res) => {
     where: { id: user.id },
     data: {
       passwordHash,
+      passwordChangedAt: new Date(),
       passwordResetTokenHash: null,
       passwordResetTokenExpiresAt: null
     }
   });
 
   return res.json({ status: "ok" });
+});
+
+router.get("/me", requireAuth, async (req, res) => {
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+  const roles = await getUserRoles(user.id);
+  return res.json({
+    id: user.id,
+    email: user.email,
+    fullName: user.fullName,
+    roles,
+    emailVerifiedAt: user.emailVerifiedAt,
+    createdAt: user.createdAt
+  });
+});
+
+router.post("/password/change", authLimiter, requireAuth, async (req, res) => {
+  const parse = changePasswordSchema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
+  }
+  const { currentPassword, newPassword } = parse.data;
+
+  const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+  if (!user) {
+    return res.status(404).json({ error: "User not found" });
+  }
+
+  const ok = await verifyPassword(currentPassword, user.passwordHash);
+  if (!ok) {
+    return res.status(401).json({ error: "Current password is incorrect" });
+  }
+  if (currentPassword === newPassword) {
+    return res.status(400).json({ error: "New password must be different from the current password" });
+  }
+
+  const passwordHash = await hashPassword(newPassword);
+
+  // Issue a fresh token, then anchor passwordChangedAt to that token's `iat`
+  // second. requireAuth rejects tokens whose `iat` predates this, so every
+  // other session is signed out while this freshly-issued one stays valid.
+  // (JWT `iat` has second granularity, so we align to the same second.)
+  const roles = await getUserRoles(user.id);
+  const token = signToken({ id: user.id, email: user.email, roles });
+  const { iat } = verifyToken(token);
+
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash, passwordChangedAt: new Date(iat * 1000) }
+  });
+
+  return res.json({ status: "ok", token });
 });
 
 export default router;

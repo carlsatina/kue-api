@@ -17,6 +17,10 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
+// Trust the first reverse proxy (nginx/Render/etc.) so rate limiting and IP
+// detection use the real client IP from X-Forwarded-For, not the proxy's.
+app.set("trust proxy", 1);
+
 const defaultOrigins = [
   "https://kue.arshii.net",
   "https://localhost",

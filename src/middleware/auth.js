@@ -1,6 +1,7 @@
 import { verifyToken } from "../utils/jwt.js";
+import prisma from "../lib/prisma.js";
 
-export function requireAuth(req, res, next) {
+export async function requireAuth(req, res, next) {
   const header = req.headers.authorization || "";
   const token = header.startsWith("Bearer ") ? header.slice(7) : null;
   if (!token) {
@@ -8,6 +9,25 @@ export function requireAuth(req, res, next) {
   }
   try {
     const payload = verifyToken(token);
+
+    // Invalidate any token issued before the user's last password change so
+    // changing a password signs out all other existing sessions. A 1s grace
+    // covers JWT `iat` second-granularity vs. the millisecond timestamp.
+    const user = await prisma.user.findUnique({
+      where: { id: payload.id },
+      select: { passwordChangedAt: true }
+    });
+    if (!user) {
+      return res.status(401).json({ error: "Invalid token" });
+    }
+    if (
+      user.passwordChangedAt &&
+      payload.iat &&
+      payload.iat * 1000 < user.passwordChangedAt.getTime()
+    ) {
+      return res.status(401).json({ error: "Session expired, please sign in again" });
+    }
+
     req.user = payload;
     return next();
   } catch (err) {
