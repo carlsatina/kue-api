@@ -9,6 +9,7 @@ const router = express.Router();
 
 const createSchema = z.object({
   name: z.string().min(1),
+  location: z.string().optional(),
   startsAt: z.string().datetime().optional(),
   endsAt: z.string().datetime().optional(),
   mode: z.enum(["usual", "tournament"]).default("usual"),
@@ -31,6 +32,9 @@ const feeSchema = z.object({
 
 const updateSessionSchema = z.object({
   name: z.string().min(1).optional(),
+  location: z.string().nullable().optional(),
+  startsAt: z.string().datetime().nullable().optional(),
+  endsAt: z.string().datetime().nullable().optional(),
   mode: z.enum(["usual", "tournament"]).optional(),
   gameType: z.enum(["singles", "doubles"]).optional(),
   defaultBracketType: z.enum(["single", "double", "round_robin"]).nullable().optional(),
@@ -64,6 +68,7 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
   const session = await prisma.session.create({
     data: {
       name: data.name,
+      location: data.location ?? null,
       startsAt: data.startsAt ? new Date(data.startsAt) : null,
       endsAt: data.endsAt ? new Date(data.endsAt) : null,
       feeMode: data.feeMode,
@@ -263,6 +268,13 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   const data = parse.data;
   const updates = {
     name: data.name,
+    location: data.location,
+    startsAt: data.startsAt === undefined
+      ? undefined
+      : (data.startsAt ? new Date(data.startsAt) : null),
+    endsAt: data.endsAt === undefined
+      ? undefined
+      : (data.endsAt ? new Date(data.endsAt) : null),
     mode: data.mode,
     gameType: data.gameType,
     defaultBracketType: data.defaultBracketType,

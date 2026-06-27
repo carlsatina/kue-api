@@ -93,7 +93,7 @@ router.get("/board/:sessionId", async (req, res) => {
     currentMatch: cs.currentMatchId ? matchMap.get(cs.currentMatchId) || null : null
   }));
 
-  res.json({ session: { id: session.id, name: session.name }, courts: board });
+  res.json({ session: { id: session.id, name: session.name, location: session.location, startsAt: session.startsAt, endsAt: session.endsAt }, courts: board });
 });
 
 router.get("/queue/:token/rankings", async (req, res) => {
@@ -360,6 +360,9 @@ router.get("/queue/:token", async (req, res) => {
     session: {
       id: session.id,
       name: session.name,
+      location: session.location,
+      startsAt: session.startsAt,
+      endsAt: session.endsAt,
       gameType: session.gameType,
       defaultBracketType: session.defaultBracketType,
       mode: session.mode
@@ -392,6 +395,7 @@ router.get("/session-invite/:token", async (req, res) => {
       id: session.id,
       name: session.name,
       status: session.status,
+      location: session.location,
       startsAt: session.startsAt,
       endsAt: session.endsAt,
       requirePaymentToJoin: session.requirePaymentToJoin,
@@ -499,6 +503,9 @@ router.get("/fees-session/:token", async (req, res) => {
     session: {
       id: session.id,
       name: session.name,
+      location: session.location,
+      startsAt: session.startsAt,
+      endsAt: session.endsAt,
       requirePaymentToJoin: session.requirePaymentToJoin,
       paymentDeadline: session.paymentDeadline,
       deadlinePassed: deadlinePassed(session),

@@ -113,6 +113,7 @@ model UserRole {
 model Session {
   id             String           @id @default(uuid()) @db.Uuid
   name           String
+  location       String?
   startsAt       DateTime?        @map("starts_at")
   endsAt         DateTime?        @map("ends_at")
   status         SessionStatus

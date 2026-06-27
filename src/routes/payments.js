@@ -66,6 +66,7 @@ router.get("/:sessionId/balances", requireAuth, requireRole(["admin", "staff"]),
     return {
       playerId: sp.playerId,
       player: sp.player,
+      status: sp.status,
       due,
       paid,
       remaining: Math.max(0, due - paid),
