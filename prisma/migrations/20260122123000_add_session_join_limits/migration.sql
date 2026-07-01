@@ -1,3 +1,0 @@
-ALTER TABLE "sessions"
-ADD COLUMN "regular_join_limit" INTEGER NOT NULL DEFAULT 0,
-ADD COLUMN "new_joiner_limit" INTEGER NOT NULL DEFAULT 0;
