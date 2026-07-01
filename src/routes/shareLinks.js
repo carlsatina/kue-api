@@ -26,11 +26,11 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
 
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
-  const player = await findPlayerForUser(parse.data.playerId, req.user.id);
+  const player = await findPlayerForUser(parse.data.playerId, req.workspaceId);
   if (!player) {
     return res.status(404).json({ error: "Player not found" });
   }
@@ -49,7 +49,7 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (
 
 router.post("/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const existingLink = await findShareLinkForUser(id, req.user.id);
+  const existingLink = await findShareLinkForUser(id, req.workspaceId);
   if (!existingLink) {
     return res.status(404).json({ error: "Link not found" });
   }
@@ -62,7 +62,7 @@ router.post("/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (
 
 router.post("/session/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -78,7 +78,7 @@ router.post("/session/:sessionId", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/session/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const existingLink = await findSessionShareLinkForUser(id, req.user.id);
+  const existingLink = await findSessionShareLinkForUser(id, req.workspaceId);
   if (!existingLink) {
     return res.status(404).json({ error: "Link not found" });
   }
@@ -91,7 +91,7 @@ router.post("/session/:id/revoke", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/session-invite/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -107,7 +107,7 @@ router.post("/session-invite/:sessionId", requireAuth, requireRole(["admin", "st
 
 router.post("/session-invite/:id/revoke", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const existingLink = await findSessionInviteLinkForUser(id, req.user.id);
+  const existingLink = await findSessionInviteLinkForUser(id, req.workspaceId);
   if (!existingLink) {
     return res.status(404).json({ error: "Link not found" });
   }

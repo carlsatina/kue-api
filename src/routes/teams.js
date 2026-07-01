@@ -22,7 +22,7 @@ const membersSchema = z.object({
 
 router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const teams = await prisma.team.findMany({
-    where: { createdBy: req.user.id, deletedAt: null },
+    where: { workspaceId: req.workspaceId, deletedAt: null },
     orderBy: { createdAt: "asc" },
     include: {
       players: {
@@ -43,7 +43,8 @@ router.post("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) 
     data: {
       name: parse.data.name,
       color: parse.data.color || null,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      workspaceId: req.workspaceId
     }
   });
   res.json(team);
@@ -54,7 +55,7 @@ router.patch("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, r
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
-  const team = await findTeamForUser(req.params.id, req.user.id);
+  const team = await findTeamForUser(req.params.id, req.workspaceId);
   if (!team) {
     return res.status(404).json({ error: "Team not found" });
   }
@@ -72,7 +73,7 @@ router.patch("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, r
 });
 
 router.delete("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
-  const team = await findTeamForUser(req.params.id, req.user.id);
+  const team = await findTeamForUser(req.params.id, req.workspaceId);
   if (!team) {
     return res.status(404).json({ error: "Team not found" });
   }
@@ -94,7 +95,7 @@ router.post("/:id/members", requireAuth, requireRole(["admin", "staff"]), async 
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
-  const team = await findTeamForUser(req.params.id, req.user.id);
+  const team = await findTeamForUser(req.params.id, req.workspaceId);
   if (!team) {
     return res.status(404).json({ error: "Team not found" });
   }
@@ -102,7 +103,7 @@ router.post("/:id/members", requireAuth, requireRole(["admin", "staff"]), async 
   const playerIds = parse.data.playerIds || [];
   if (playerIds.length) {
     const ownedCount = await prisma.player.count({
-      where: { id: { in: playerIds }, createdBy: req.user.id, deletedAt: null }
+      where: { id: { in: playerIds }, workspaceId: req.workspaceId, deletedAt: null }
     });
     if (ownedCount !== playerIds.length) {
       return res.status(404).json({ error: "Player not found" });

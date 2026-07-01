@@ -14,6 +14,12 @@ enum RoleName {
   staff
 }
 
+enum AssistantInviteStatus {
+  pending
+  accepted
+  revoked
+}
+
 enum SessionStatus {
   draft
   open
@@ -88,16 +94,39 @@ model User {
   passwordResetTokenHash String? @map("password_reset_token_hash")
   passwordResetTokenExpiresAt DateTime? @map("password_reset_token_expires_at")
   passwordChangedAt DateTime? @map("password_changed_at")
+  activeWorkspaceId String? @db.Uuid @map("active_workspace_id")
   createdAt    DateTime   @default(now()) @map("created_at")
   roles        UserRole[]
   sessions     Session[]  @relation("SessionCreator")
   courts       Court[]    @relation("CourtCreator")
   players      Player[]   @relation("PlayerCreator")
   teams        Team[]     @relation("TeamCreator")
+  ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
+  activeWorkspace Workspace? @relation("ActiveWorkspace", fields: [activeWorkspaceId], references: [id], onDelete: SetNull)
+  workspaceMemberships WorkspaceMember[] @relation("WorkspaceUser")
 
   @@index([emailVerifyTokenHash])
   @@index([passwordResetTokenHash])
   @@map("users")
+}
+
+model Workspace {
+  id        String   @id @default(uuid()) @db.Uuid
+  name      String
+  ownerId   String   @db.Uuid @map("owner_id")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  owner       User                     @relation("WorkspaceOwner", fields: [ownerId], references: [id], onDelete: Cascade)
+  activeForUsers User[]                @relation("ActiveWorkspace")
+  members     WorkspaceMember[]
+  sessions    Session[]
+  courts      Court[]
+  players     Player[]
+  teams       Team[]
+  invites     SessionAssistantInvite[]
+
+  @@index([ownerId])
+  @@map("workspaces")
 }
 
 model UserRole {
@@ -129,10 +158,12 @@ model Session {
   returnToQueue  Boolean          @default(true) @map("return_to_queue")
   announcements  String?
   createdBy      String?          @db.Uuid @map("created_by")
+  workspaceId    String           @db.Uuid @map("workspace_id")
   createdAt      DateTime         @default(now()) @map("created_at")
   closedAt       DateTime?        @map("closed_at")
 
   creator        User?            @relation("SessionCreator", fields: [createdBy], references: [id])
+  workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   courtSessions  CourtSession[]
   sessionPlayers SessionPlayer[]
   queueEntries   QueueEntry[]
@@ -142,8 +173,10 @@ model Session {
   sessionShareLinks SessionShareLink[]
   sessionInviteLinks SessionInviteLink[]
   bracketOverrides BracketOverride[]
+  assistantInvites SessionAssistantInvite[]
 
   @@index([status])
+  @@index([workspaceId])
   @@map("sessions")
 }
 
@@ -178,19 +211,63 @@ model SessionInviteLink {
   @@map("session_invite_links")
 }
 
+// A workspace is one queue master (the owner) plus their assistants. An
+// assistant belongs to a single workspace and shares the owner's full view:
+// they can create, delete, and view every session in that workspace.
+model WorkspaceMember {
+  id          String   @id @default(uuid()) @db.Uuid
+  workspaceId String   @db.Uuid @map("workspace_id")
+  userId      String   @db.Uuid @map("user_id")
+  invitedBy   String?  @db.Uuid @map("invited_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation("WorkspaceUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([workspaceId])
+  @@index([userId])
+  @@map("workspace_members")
+}
+
+model SessionAssistantInvite {
+  id             String                @id @default(uuid()) @db.Uuid
+  workspaceId    String?               @db.Uuid @map("workspace_id")
+  sessionId      String?               @db.Uuid @map("session_id")
+  email          String
+  tokenHash      String                @unique @map("token_hash")
+  status         AssistantInviteStatus @default(pending)
+  invitedBy      String?               @db.Uuid @map("invited_by")
+  expiresAt      DateTime?             @map("expires_at")
+  acceptedAt     DateTime?             @map("accepted_at")
+  acceptedUserId String?               @db.Uuid @map("accepted_user_id")
+  createdAt      DateTime              @default(now()) @map("created_at")
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  session   Session?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId])
+  @@index([sessionId])
+  @@index([email])
+  @@map("session_assistant_invites")
+}
+
 model Court {
   id        String         @id @default(uuid()) @db.Uuid
   name      String
   notes     String?
   active    Boolean        @default(true)
   createdBy String?        @db.Uuid @map("created_by")
+  workspaceId String       @db.Uuid @map("workspace_id")
   createdAt DateTime       @default(now()) @map("created_at")
   deletedAt DateTime?      @map("deleted_at")
 
   creator       User?         @relation("CourtCreator", fields: [createdBy], references: [id])
+  workspace     Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   courtSessions CourtSession[]
 
   @@index([createdBy])
+  @@index([workspaceId])
   @@map("courts")
 }
 
@@ -216,14 +293,17 @@ model Team {
   name      String
   color     String?
   createdBy String?  @db.Uuid @map("created_by")
+  workspaceId String @db.Uuid @map("workspace_id")
   createdAt DateTime @default(now()) @map("created_at")
   deletedAt DateTime? @map("deleted_at")
 
   creator           User?              @relation("TeamCreator", fields: [createdBy], references: [id])
+  workspace         Workspace          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   players           Player[]
   matchParticipants MatchParticipant[]
 
   @@index([createdBy])
+  @@index([workspaceId])
   @@map("teams")
 }
 
@@ -235,10 +315,12 @@ model Player {
   contact   String?
   teamId    String?         @db.Uuid @map("team_id")
   createdBy String?         @db.Uuid @map("created_by")
+  workspaceId String        @db.Uuid @map("workspace_id")
   createdAt DateTime        @default(now()) @map("created_at")
   deletedAt DateTime?       @map("deleted_at")
 
   creator           User?             @relation("PlayerCreator", fields: [createdBy], references: [id])
+  workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   team              Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
   sessionPlayers    SessionPlayer[]
   queueEntryPlayers QueueEntryPlayer[]
@@ -248,6 +330,7 @@ model Player {
 
   @@index([createdBy])
   @@index([teamId])
+  @@index([workspaceId])
   @@map("players")
 }
 

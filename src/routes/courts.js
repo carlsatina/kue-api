@@ -25,7 +25,7 @@ const statusSchema = z.object({
 
 router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const courts = await prisma.court.findMany({
-    where: { deletedAt: null, createdBy: req.user.id }
+    where: { deletedAt: null, workspaceId: req.workspaceId }
   });
   res.json(courts);
 });
@@ -36,11 +36,10 @@ router.post("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) 
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
   const court = await prisma.court.create({
-    data: { ...parse.data, createdBy: req.user.id }
+    data: { ...parse.data, createdBy: req.user.id, workspaceId: req.workspaceId }
   });
-
   const activeSession = await prisma.session.findFirst({
-    where: { status: "open", createdBy: req.user.id }
+    where: { status: "open", workspaceId: req.workspaceId }
   });
   if (activeSession) {
     await prisma.courtSession.create({
@@ -60,7 +59,7 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
-  const court = await findCourtForUser(req.params.id, req.user.id);
+  const court = await findCourtForUser(req.params.id, req.workspaceId);
   if (!court) {
     return res.status(404).json({ error: "Court not found" });
   }
@@ -73,7 +72,7 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
 
 router.delete("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   const { id } = req.params;
-  const court = await findCourtForUser(id, req.user.id);
+  const court = await findCourtForUser(id, req.workspaceId);
   if (!court || court.deletedAt) {
     return res.status(404).json({ error: "Court not found" });
   }
@@ -103,11 +102,11 @@ router.post("/:id/status", requireAuth, requireRole(["admin", "staff"]), async (
   }
 
   const { sessionId, status } = parse.data;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
-  const court = await findCourtForUser(req.params.id, req.user.id);
+  const court = await findCourtForUser(req.params.id, req.workspaceId);
   if (!court) {
     return res.status(404).json({ error: "Court not found" });
   }

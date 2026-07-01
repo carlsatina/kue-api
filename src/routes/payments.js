@@ -19,7 +19,7 @@ const paymentSchema = z.object({
 router.get("/:sessionId/balances", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   try {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
   const sessionPlayers = await prisma.sessionPlayer.findMany({
@@ -87,7 +87,7 @@ router.get("/:sessionId/balances", requireAuth, requireRole(["admin", "staff"]),
 router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.single("proof"), async (req, res) => {
   try {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
   const parse = paymentSchema.safeParse(req.body);
@@ -95,7 +95,7 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
 
-  const player = await findPlayerForUser(parse.data.playerId, req.user.id);
+  const player = await findPlayerForUser(parse.data.playerId, req.workspaceId);
   if (!player) return res.status(404).json({ error: "Player not found" });
 
   let proofImageUrl = null;
@@ -128,7 +128,7 @@ router.post("/:sessionId", requireAuth, requireRole(["admin", "staff"]), upload.
 router.patch("/:sessionId/:paymentId/confirm", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   try {
   const { sessionId, paymentId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });
@@ -161,7 +161,7 @@ router.patch("/:sessionId/:paymentId/confirm", requireAuth, requireRole(["admin"
 router.patch("/:sessionId/:paymentId/reject", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   try {
   const { sessionId, paymentId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) return res.status(404).json({ error: "Session not found" });
 
   const payment = await prisma.payment.findUnique({ where: { id: paymentId } });

@@ -59,6 +59,7 @@ const bracketOverrideQuerySchema = z.object({
   matchFormat: z.enum(["singles", "doubles"]).optional()
 });
 
+
 router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
   const parse = createSchema.safeParse(req.body);
   if (!parse.success) {
@@ -83,7 +84,8 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
       returnToQueue: data.returnToQueue,
       announcements: data.announcements,
       status: "draft",
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      workspaceId: req.workspaceId
     }
   });
   res.json(session);
@@ -91,7 +93,7 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
 
 router.post("/:id/open", requireAuth, requireRole(["admin"]), async (req, res) => {
   const { id } = req.params;
-  const owned = await findSessionForUser(id, req.user.id);
+  const owned = await findSessionForUser(id, req.workspaceId);
   if (!owned) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -99,9 +101,8 @@ router.post("/:id/open", requireAuth, requireRole(["admin"]), async (req, res) =
     where: { id },
     data: { status: "open", closedAt: null }
   });
-
   const activeCourts = await prisma.court.findMany({
-    where: { active: true, deletedAt: null, createdBy: req.user.id }
+    where: { active: true, deletedAt: null, workspaceId: req.workspaceId }
   });
   await Promise.all(
     activeCourts.map((court) =>
@@ -122,7 +123,7 @@ router.post("/:id/open", requireAuth, requireRole(["admin"]), async (req, res) =
 
 router.post("/:id/close", requireAuth, requireRole(["admin"]), async (req, res) => {
   const { id } = req.params;
-  const owned = await findSessionForUser(id, req.user.id);
+  const owned = await findSessionForUser(id, req.workspaceId);
   if (!owned) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -135,7 +136,7 @@ router.post("/:id/close", requireAuth, requireRole(["admin"]), async (req, res) 
 
 router.delete("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -149,7 +150,7 @@ router.delete("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
 
 router.get("/active", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const session = await prisma.session.findFirst({
-    where: { status: "open", createdBy: req.user.id },
+    where: { status: "open", workspaceId: req.workspaceId },
     orderBy: { createdAt: "desc" }
   });
   if (!session) {
@@ -187,8 +188,8 @@ router.get("/active", requireAuth, requireRole(["admin", "staff"]), async (req, 
 router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { status } = req.query;
   const where = status
-    ? { status: String(status), createdBy: req.user.id }
-    : { createdBy: req.user.id };
+    ? { status: String(status), workspaceId: req.workspaceId }
+    : { workspaceId: req.workspaceId };
   const sessions = await prisma.session.findMany({
     where,
     orderBy: { createdAt: "desc" }
@@ -198,7 +199,7 @@ router.get("/", requireAuth, requireRole(["admin", "staff"]), async (req, res) =
 
 router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -241,7 +242,7 @@ router.patch("/:id/fee", requireAuth, requireRole(["admin"]), async (req, res) =
     return res.status(400).json({ error: "No fee updates provided" });
   }
 
-  const session = await findSessionForUser(req.params.id, req.user.id);
+  const session = await findSessionForUser(req.params.id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -292,7 +293,7 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
     return res.status(400).json({ error: "No updates provided" });
   }
 
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -306,7 +307,7 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
 
 router.get("/:id/players", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -319,7 +320,7 @@ router.get("/:id/players", requireAuth, requireRole(["admin", "staff"]), async (
 
 router.get("/:id/rankings", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -355,7 +356,7 @@ router.get("/:id/team-stats", requireAuth, requireRole(["admin", "staff"]), asyn
   const { id } = req.params;
   const scope = String(req.query.scope || "").toLowerCase();
   const isAllScope = scope === "all";
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -369,12 +370,11 @@ router.get("/:id/team-stats", requireAuth, requireRole(["admin", "staff"]), asyn
       champion: null
     });
   }
-
   const matches = await prisma.match.findMany({
     where: isAllScope
       ? {
           status: "ended",
-          session: { createdBy: req.user.id, mode: "tournament" }
+          session: { workspaceId: req.workspaceId, mode: "tournament" }
         }
       : { sessionId: id, status: "ended" },
     include: { participants: { include: { team: true } } }
@@ -471,7 +471,7 @@ router.get("/:id/team-stats", requireAuth, requireRole(["admin", "staff"]), asyn
 
 router.get("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -493,7 +493,7 @@ router.get("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"]
 
 router.post("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -529,7 +529,7 @@ router.post("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"
 
 router.delete("/:id/bracket-overrides", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { id } = req.params;
-  const session = await findSessionForUser(id, req.user.id);
+  const session = await findSessionForUser(id, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }

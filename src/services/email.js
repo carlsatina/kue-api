@@ -9,8 +9,9 @@ const RESET_TTL_HOURS = Number(process.env.PASSWORD_RESET_TTL_HOURS || 2);
 
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
-function buildVerifyUrl(token) {
-  return `${APP_BASE_URL.replace(/\/$/, "")}/verify?token=${encodeURIComponent(token)}`;
+function buildVerifyUrl(token, next) {
+  const base = `${APP_BASE_URL.replace(/\/$/, "")}/verify?token=${encodeURIComponent(token)}`;
+  return next ? `${base}&next=${encodeURIComponent(next)}` : base;
 }
 
 export function generateVerificationToken() {
@@ -31,8 +32,97 @@ function buildResetUrl(token) {
   return `${APP_BASE_URL.replace(/\/$/, "")}/reset-password?token=${encodeURIComponent(token)}`;
 }
 
-export async function sendVerificationEmail({ to, token }) {
-  const verifyUrl = buildVerifyUrl(token);
+function buildAssistantInviteUrl(token) {
+  return `${APP_BASE_URL.replace(/\/$/, "")}/invite/${encodeURIComponent(token)}`;
+}
+
+export async function sendAssistantInviteEmail({ to, token, inviterEmail }) {
+  const inviteUrl = buildAssistantInviteUrl(token);
+  if (!resend) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error("Email service is not configured");
+    }
+    console.log(`[dev] Assistant invite link for ${to}: ${inviteUrl}`);
+    return { skipped: true };
+  }
+
+  const fromWho = inviterEmail ? `<strong>${inviterEmail}</strong>` : "A Kue organizer";
+  const subject = "You've been invited to help run sessions on Kue";
+  const html = `
+  <div style="background:#f6efe7;padding:32px 16px;font-family:Arial,sans-serif;color:#1f1c17;">
+    <table role="presentation" cellpadding="0" cellspacing="0" width="100%" style="max-width:600px;margin:0 auto;background:#fffaf4;border-radius:16px;border:1px solid #e6d6c4;overflow:hidden;">
+      <tr>
+        <td style="padding:24px 24px 8px;">
+          <div style="font-size:20px;font-weight:700;letter-spacing:0.02em;color:#1f1c17;">Kue</div>
+          <div style="font-size:12px;color:#7b6f62;">Queue control for courts</div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 24px 0;">
+          <h2 style="margin:0 0 8px;font-size:22px;color:#1f1c17;">You're invited as a collaborator</h2>
+          <p style="margin:0 0 14px;font-size:14px;color:#5b5248;line-height:1.6;">
+            ${fromWho} has invited you to collaborate. You'll share their workspace — you can view, create, and manage all of their sessions, including the queue, matches, players, and payments.
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:8px 24px 16px;">
+          <a href="${inviteUrl}" style="display:inline-block;padding:12px 20px;border-radius:999px;background:#0f9d8a;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;">
+            Accept Invitation
+          </a>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 24px 16px;">
+          <p style="margin:0;font-size:12px;color:#7b6f62;">
+            Sign in (or sign up) with <strong>${to}</strong> to accept. This invite expires in 7 days.
+          </p>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:0 24px 20px;">
+          <div style="padding:12px 14px;border-radius:12px;background:#f7efe5;border:1px dashed #e4d4c2;">
+            <p style="margin:0;font-size:12px;color:#7b6f62;line-height:1.5;">
+              If the button does not work, copy and paste this URL into your browser:
+              <br />
+              <span style="word-break:break-all;color:#1f1c17;">${inviteUrl}</span>
+            </p>
+          </div>
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:16px 24px;background:#f2e6d7;border-top:1px solid #e6d6c4;">
+          <p style="margin:0;font-size:12px;color:#7b6f62;line-height:1.5;">
+            If you weren't expecting this invitation, you can safely ignore this email.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </div>
+  `;
+  const text = [
+    "You've been invited to help run sessions on Kue",
+    "",
+    `${inviterEmail || "A Kue organizer"} invited you to collaborate. You'll share their workspace.`,
+    `Sign in (or sign up) with ${to} to accept:`,
+    inviteUrl,
+    "",
+    "This invite expires in 7 days.",
+    "",
+    "If you weren't expecting this, you can ignore this message."
+  ].join("\n");
+
+  return resend.emails.send({
+    from: RESEND_FROM,
+    to,
+    subject,
+    html,
+    text
+  });
+}
+
+export async function sendVerificationEmail({ to, token, next }) {
+  const verifyUrl = buildVerifyUrl(token, next);
   if (!resend) {
     if (process.env.NODE_ENV === "production") {
       throw new Error("Email service is not configured");

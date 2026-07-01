@@ -11,6 +11,8 @@ import queueRoutes from "./routes/queue.js";
 import matchRoutes from "./routes/matches.js";
 import paymentRoutes from "./routes/payments.js";
 import shareRoutes from "./routes/shareLinks.js";
+import assistantRoutes from "./routes/assistants.js";
+import workspaceRoutes from "./routes/workspaces.js";
 import publicRoutes from "./routes/public.js";
 
 const app = express();
@@ -66,6 +68,8 @@ app.use("/api/queue", queueRoutes);
 app.use("/api/matches", matchRoutes);
 app.use("/api/payments", paymentRoutes);
 app.use("/api/share-links", shareRoutes);
+app.use("/api/assistants", assistantRoutes);
+app.use("/api/workspaces", workspaceRoutes);
 app.use("/api/public", publicRoutes);
 
 export default app;

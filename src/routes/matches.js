@@ -36,7 +36,7 @@ const cancelSchema = z.object({
 
 router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const match = await prisma.match.findFirst({
-    where: { id: req.params.id, session: { createdBy: req.user.id } },
+    where: { id: req.params.id, session: { workspaceId: req.workspaceId } },
     include: { participants: { include: { player: { include: { team: true } } } } }
   });
   if (!match) {
@@ -46,7 +46,7 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
 });
 
 router.post("/:sessionId/suggest", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
-  const session = await findSessionForUser(req.params.sessionId, req.user.id);
+  const session = await findSessionForUser(req.params.sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -64,7 +64,7 @@ router.post("/:sessionId/suggest", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -95,7 +95,7 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
 
   const allPlayerIds = teams.flat();
   const ownedPlayers = await prisma.player.count({
-    where: { id: { in: allPlayerIds }, createdBy: req.user.id, deletedAt: null }
+    where: { id: { in: allPlayerIds }, workspaceId: req.workspaceId, deletedAt: null }
   });
   if (ownedPlayers !== allPlayerIds.length) {
     return res.status(404).json({ error: "Player not found" });
@@ -104,7 +104,7 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
   let teamIds = [null, null];
   if (session.mode === "tournament") {
     const players = await prisma.player.findMany({
-      where: { id: { in: allPlayerIds }, createdBy: req.user.id, deletedAt: null },
+      where: { id: { in: allPlayerIds }, workspaceId: req.workspaceId, deletedAt: null },
       select: { id: true, teamId: true }
     });
     const teamMap = new Map(players.map((player) => [player.id, player.teamId]));
@@ -171,7 +171,7 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
 
 router.post("/:sessionId/end", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -239,7 +239,7 @@ router.post("/:sessionId/end", requireAuth, requireRole(["admin", "staff"]), asy
 
 router.patch("/:sessionId/result", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -319,7 +319,7 @@ router.patch("/:sessionId/result", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/:sessionId/cancel", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -385,7 +385,7 @@ router.post("/:sessionId/cancel", requireAuth, requireRole(["admin", "staff"]), 
 
 router.get("/:sessionId/history", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }

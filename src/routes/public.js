@@ -4,8 +4,17 @@ import prisma from "../lib/prisma.js";
 import { upload, compressToTarget } from "../lib/imageUpload.js";
 import { saveProof } from "../lib/storage.js";
 import { reconcileGatedSession, getCapacityState, deadlinePassed } from "../services/joinGate.js";
+import { loadAssistantInvite, inviteSummary } from "../utils/invites.js";
 
 const router = express.Router();
+
+// Unauthenticated lookup of an assistant invite, so the accept page can greet a
+// signed-out invitee and prefill their email before they sign up or sign in.
+router.get("/assistant-invite/:token", async (req, res) => {
+  const invite = await loadAssistantInvite(req.params.token);
+  if (!invite) return res.status(404).json({ error: "Invite not found" });
+  res.json(inviteSummary(invite));
+});
 
 router.get("/player/:token", async (req, res) => {
   const { token } = req.params;
@@ -168,11 +177,10 @@ router.get("/queue/:token/team-stats", async (req, res) => {
     });
   }
 
-  const ownerId = session.createdBy || null;
-  const matchWhere = ownerId
+  const matchWhere = session.workspaceId
     ? {
         status: "ended",
-        session: { createdBy: ownerId, mode: "tournament" }
+        session: { workspaceId: session.workspaceId, mode: "tournament" }
       }
     : { sessionId: session.id, status: "ended" };
 
@@ -609,31 +617,23 @@ router.post("/session-invite/:token/register", async (req, res) => {
     return res.status(409).json({ error: "Session is not open" });
   }
 
-  const ownerId = link.session.createdBy || null;
+  const workspaceId = link.session.workspaceId;
 
   let player = null;
   if (contact) {
     player = await prisma.player.findFirst({
-      where: {
-        contact,
-        deletedAt: null,
-        ...(ownerId ? { createdBy: ownerId } : {})
-      }
+      where: { contact, deletedAt: null, workspaceId }
     });
   }
   if (!player) {
     player = await prisma.player.findFirst({
-      where: {
-        fullName,
-        deletedAt: null,
-        ...(ownerId ? { createdBy: ownerId } : {})
-      }
+      where: { fullName, deletedAt: null, workspaceId }
     });
   }
 
   if (!player) {
     player = await prisma.player.create({
-      data: { fullName, nickname, contact, createdBy: ownerId }
+      data: { fullName, nickname, contact, workspaceId, createdBy: link.session.createdBy || null }
     });
   } else if (nickname || contact) {
     player = await prisma.player.update({

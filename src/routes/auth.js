@@ -18,8 +18,15 @@ const router = express.Router();
 const registerSchema = z.object({
   email: z.string().email(),
   password: z.string().min(6),
-  fullName: z.string().min(1).optional()
+  fullName: z.string().min(1).optional(),
+  redirect: z.string().optional()
 });
+
+// Only allow same-origin relative paths as post-verification redirects, so an
+// attacker can't turn the verification email into an open redirect.
+function safeInternalPath(value) {
+  return typeof value === "string" && value.startsWith("/") && !value.startsWith("//") ? value : "";
+}
 
 const loginSchema = z.object({
   email: z.string().email(),
@@ -72,6 +79,7 @@ router.post("/register", authLimiter, async (req, res) => {
   }
 
   const { email, password, fullName } = parse.data;
+  const next = safeInternalPath(parse.data.redirect);
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing?.emailVerifiedAt) {
     return res.status(409).json({ error: "Email already in use" });
@@ -110,7 +118,21 @@ router.post("/register", authLimiter, async (req, res) => {
     });
   }
 
-  await sendVerificationEmail({ to: user.email, token });
+  // Every user owns a default workspace. Create one (and make it active) if the
+  // user doesn't have any yet — covers new sign-ups and unverified re-registers.
+  const ownedCount = await prisma.workspace.count({ where: { ownerId: user.id } });
+  if (ownedCount === 0) {
+    const base = (user.fullName || "").trim() || user.email.split("@")[0];
+    const workspace = await prisma.workspace.create({
+      data: { name: `${base}'s workspace`, ownerId: user.id }
+    });
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { activeWorkspaceId: workspace.id }
+    });
+  }
+
+  await sendVerificationEmail({ to: user.email, token, next });
 
   return res.json({
     status: "verification_sent",
@@ -179,7 +201,16 @@ router.get("/verify", async (req, res) => {
     }
   });
 
-  return res.json({ verified: true });
+  // Auto-login on verify: clicking the emailed link proves email ownership, so
+  // hand back a session token and let the client continue to its destination.
+  const roles = await getUserRoles(user.id);
+  const token2 = signToken({ id: user.id, email: user.email, roles });
+
+  return res.json({
+    verified: true,
+    token: token2,
+    user: { id: user.id, email: user.email, fullName: user.fullName, roles }
+  });
 });
 
 router.post("/password/forgot", authLimiter, async (req, res) => {

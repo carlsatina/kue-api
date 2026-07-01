@@ -21,7 +21,7 @@ const reorderSchema = z.object({
 
 router.get("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -35,7 +35,7 @@ router.get("/:sessionId", requireAuth, requireRole(["admin", "staff"]), async (r
 
 router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -51,9 +51,8 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
   if (type === "doubles" && playerIds.length !== 2) {
     return res.status(400).json({ error: "Doubles requires 2 players" });
   }
-
   const ownedPlayers = await prisma.player.count({
-    where: { id: { in: playerIds }, createdBy: req.user.id, deletedAt: null }
+    where: { id: { in: playerIds }, workspaceId: req.workspaceId, deletedAt: null }
   });
   if (ownedPlayers !== playerIds.length) {
     return res.status(404).json({ error: "Player not found" });
@@ -68,7 +67,7 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
 
   if (session.mode === "tournament") {
     const players = await prisma.player.findMany({
-      where: { id: { in: playerIds }, createdBy: req.user.id, deletedAt: null },
+      where: { id: { in: playerIds }, workspaceId: req.workspaceId, deletedAt: null },
       select: { id: true, teamId: true }
     });
     const missingTeam = players.filter((p) => !p.teamId);
@@ -121,7 +120,7 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/:sessionId/dequeue", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -143,7 +142,7 @@ router.post("/:sessionId/dequeue", requireAuth, requireRole(["admin", "staff"]),
 
 router.post("/:sessionId/away", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
@@ -165,7 +164,7 @@ router.post("/:sessionId/away", requireAuth, requireRole(["admin", "staff"]), as
 
 router.post("/:sessionId/reorder", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.user.id);
+  const session = await findSessionForUser(sessionId, req.workspaceId);
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
