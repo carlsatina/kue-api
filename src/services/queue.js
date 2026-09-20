@@ -1,4 +1,8 @@
 import prisma from "../lib/prisma.js";
+import { pickNextMatch } from "./pairing.js";
+
+// How far back the avoid_repeat strategy looks for partnerships to break up.
+const RECENT_MATCH_WINDOW = 8;
 
 function minutesBetween(dateA, dateB) {
   const diffMs = Math.max(0, dateA.getTime() - dateB.getTime());
@@ -11,9 +15,96 @@ function computeFairnessScore({ now, queuedAt, lastPlayedAt }) {
   return waitMinutes + sincePlayed;
 }
 
+// Open play: the lineup is a queue of rackets, and a court call takes whole
+// entries off the head until it has a full court. Reads the rows, hands plain
+// objects to the pure pairing engine, and returns the same shape as
+// suggestMatch so the match-start path doesn't care which mode produced it.
+// Takes a client so a court call can run the whole read-decide-write in one
+// transaction.
+export async function suggestOpenPlayMatch(sessionId, client = prisma) {
+  const session = await client.session.findUnique({ where: { id: sessionId } });
+  if (!session) return null;
+
+  const teamSize = session.gameType === "singles" ? 1 : 2;
+
+  const entries = await client.queueEntry.findMany({
+    where: { sessionId, status: "queued" },
+    orderBy: { position: "asc" },
+    include: { players: true }
+  });
+  if (!entries.length) return null;
+
+  const playerIds = [...new Set(entries.flatMap((e) => e.players.map((p) => p.playerId)))];
+
+  const [sessionPlayers, playerRows, recentMatches] = await Promise.all([
+    client.sessionPlayer.findMany({ where: { sessionId, playerId: { in: playerIds } } }),
+    client.player.findMany({
+      where: { id: { in: playerIds } },
+      select: { id: true, skillLevel: true }
+    }),
+    client.match.findMany({
+      where: { sessionId, status: "ended" },
+      orderBy: { endedAt: "desc" },
+      take: RECENT_MATCH_WINDOW,
+      include: { participants: { select: { playerId: true, teamNumber: true } } }
+    })
+  ]);
+
+  const stateByPlayer = new Map(sessionPlayers.map((sp) => [sp.playerId, sp]));
+  const skillByPlayer = new Map(playerRows.map((p) => [p.id, p.skillLevel]));
+
+  const players = new Map(
+    playerIds.map((id) => {
+      const state = stateByPlayer.get(id);
+      return [
+        id,
+        {
+          skillLevel: skillByPlayer.get(id),
+          wins: state?.wins || 0,
+          losses: state?.losses || 0
+        }
+      ];
+    })
+  );
+
+  // Only rackets whose players are all present and free to be called.
+  const eligible = entries
+    .filter((entry) =>
+      entry.players.every((p) => stateByPlayer.get(p.playerId)?.status === "checked_in")
+    )
+    .map((entry) => ({
+      id: entry.id,
+      playerIds: entry.players.map((p) => p.playerId),
+      lockedTeams: entry.lockedTeams,
+      teams: entry.lockedTeams
+        ? [1, 2].map((teamNo) =>
+            entry.players.filter((p) => p.teamNo === teamNo).map((p) => p.playerId)
+          )
+        : null
+    }));
+
+  const history = recentMatches.map((match) => ({
+    teams: [1, 2].map((teamNo) =>
+      match.participants.filter((p) => p.teamNumber === teamNo).map((p) => p.playerId)
+    )
+  }));
+
+  const picked = pickNextMatch({
+    entries: eligible,
+    players,
+    history,
+    strategy: session.pairingStrategy,
+    teamSize
+  });
+  if (!picked) return null;
+
+  return { matchType: session.gameType, ...picked };
+}
+
 export async function suggestMatch(sessionId, matchType) {
   const session = await prisma.session.findUnique({ where: { id: sessionId } });
   if (!session) return null;
+  if (session.queueMode === "open_play") return suggestOpenPlayMatch(sessionId);
 
   const entries = await prisma.queueEntry.findMany({
     where: { sessionId, status: "queued", type: matchType },

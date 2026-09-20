@@ -62,6 +62,29 @@ enum QueueStatus {
   removed
 }
 
+// How a session forms matches out of the queue. `pairs` is the classic flow:
+// an entry is a ready-made side (1 for singles, 2 for doubles) and a match is
+// two entries. `open_play` is the racket lineup: players drop in individually
+// or with a partner, and a court call takes whole entries off the head of the
+// line until it has enough players, then splits them into two teams.
+enum QueueMode {
+  pairs
+  open_play
+}
+
+// How the four players a court call picked get split into two teams.
+enum PairingStrategy {
+  arrival      // lineup order is the law: first two vs next two
+  balanced     // minimise the rating gap between the two teams
+  avoid_repeat // balanced, but avoid partners/opponents from recent matches
+}
+
+enum QueueSource {
+  staff
+  player
+  auto_requeue
+}
+
 enum MatchStatus {
   proposed
   active
@@ -72,6 +95,12 @@ enum MatchStatus {
 enum MatchType {
   singles
   doubles
+}
+
+enum GroupRole {
+  owner
+  manager
+  member
 }
 
 model Role {
@@ -101,6 +130,7 @@ model User {
   courts       Court[]    @relation("CourtCreator")
   players      Player[]   @relation("PlayerCreator")
   teams        Team[]     @relation("TeamCreator")
+  createdGroups Group[]   @relation("GroupCreator")
   ownedWorkspaces Workspace[] @relation("WorkspaceOwner")
   activeWorkspace Workspace? @relation("ActiveWorkspace", fields: [activeWorkspaceId], references: [id], onDelete: SetNull)
   workspaceMemberships WorkspaceMember[] @relation("WorkspaceUser")
@@ -123,6 +153,7 @@ model Workspace {
   courts      Court[]
   players     Player[]
   teams       Team[]
+  groups      Group[]
   invites     SessionAssistantInvite[]
 
   @@index([ownerId])
@@ -156,14 +187,18 @@ model Session {
   regularJoinLimit Int            @default(0) @map("regular_join_limit")
   newJoinerLimit   Int            @default(0) @map("new_joiner_limit")
   returnToQueue  Boolean          @default(true) @map("return_to_queue")
+  queueMode      QueueMode        @default(pairs) @map("queue_mode")
+  pairingStrategy PairingStrategy @default(arrival) @map("pairing_strategy")
   announcements  String?
   createdBy      String?          @db.Uuid @map("created_by")
   workspaceId    String           @db.Uuid @map("workspace_id")
+  groupId        String?          @db.Uuid @map("group_id")
   createdAt      DateTime         @default(now()) @map("created_at")
   closedAt       DateTime?        @map("closed_at")
 
   creator        User?            @relation("SessionCreator", fields: [createdBy], references: [id])
   workspace      Workspace        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  group          Group?           @relation(fields: [groupId], references: [id], onDelete: SetNull)
   courtSessions  CourtSession[]
   sessionPlayers SessionPlayer[]
   queueEntries   QueueEntry[]
@@ -174,9 +209,11 @@ model Session {
   sessionInviteLinks SessionInviteLink[]
   bracketOverrides BracketOverride[]
   assistantInvites SessionAssistantInvite[]
+  queueEvents    QueueEvent[]
 
   @@index([status])
   @@index([workspaceId])
+  @@index([groupId])
   @@map("sessions")
 }
 
@@ -307,6 +344,59 @@ model Team {
   @@map("teams")
 }
 
+// A group is a social roster — a club or barkada that plays together across
+// sessions. Distinct from Team, which is the tournament construct (a player has
+// at most one Team, but may belong to many Groups).
+model Group {
+  id          String    @id @default(uuid()) @db.Uuid
+  name        String
+  description String?
+  workspaceId String    @db.Uuid @map("workspace_id")
+  createdBy   String?   @db.Uuid @map("created_by")
+  createdAt   DateTime  @default(now()) @map("created_at")
+  deletedAt   DateTime? @map("deleted_at")
+
+  workspace   Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  creator     User?             @relation("GroupCreator", fields: [createdBy], references: [id])
+  members     GroupMember[]
+  sessions    Session[]
+  inviteLinks GroupInviteLink[]
+
+  @@index([workspaceId])
+  @@index([createdBy])
+  @@map("groups")
+}
+
+model GroupMember {
+  id       String    @id @default(uuid()) @db.Uuid
+  groupId  String    @db.Uuid @map("group_id")
+  playerId String    @db.Uuid @map("player_id")
+  role     GroupRole @default(member)
+  joinedAt DateTime  @default(now()) @map("joined_at")
+
+  group  Group  @relation(fields: [groupId], references: [id], onDelete: Cascade)
+  player Player @relation(fields: [playerId], references: [id], onDelete: Cascade)
+
+  @@unique([groupId, playerId])
+  @@index([playerId])
+  @@map("group_members")
+}
+
+// Tokenized public link that lets a player add themselves to a group's roster.
+model GroupInviteLink {
+  id        String    @id @default(uuid()) @db.Uuid
+  token     String    @unique
+  groupId   String    @db.Uuid @map("group_id")
+  revokedAt DateTime? @map("revoked_at")
+  expiresAt DateTime? @map("expires_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  group Group @relation(fields: [groupId], references: [id], onDelete: Cascade)
+
+  @@index([groupId])
+  @@map("group_invite_links")
+}
+
 model Player {
   id        String          @id @default(uuid()) @db.Uuid
   fullName  String          @map("full_name")
@@ -323,6 +413,7 @@ model Player {
   workspace         Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   team              Team?             @relation(fields: [teamId], references: [id], onDelete: SetNull)
   sessionPlayers    SessionPlayer[]
+  groupMemberships  GroupMember[]
   queueEntryPlayers QueueEntryPlayer[]
   matchParticipants MatchParticipant[]
   payments          Payment[]
@@ -361,6 +452,10 @@ model QueueEntry {
   status    QueueStatus
   position  Int
   manualOrder Boolean   @default(false) @map("manual_order")
+  // A full-court entry whose teams the organiser fixed by hand ("these four
+  // asked to play, and these two are partners"). Taken as a whole match.
+  lockedTeams Boolean   @default(false) @map("locked_teams")
+  source    QueueSource @default(staff)
   createdAt DateTime    @default(now()) @map("created_at")
   updatedAt DateTime    @updatedAt @map("updated_at")
 
@@ -375,11 +470,33 @@ model QueueEntry {
 model QueueEntryPlayer {
   entryId  String @db.Uuid @map("entry_id")
   playerId String @db.Uuid @map("player_id")
+  // Only set on a lockedTeams entry: which side this player was placed on.
+  teamNo   Int?   @map("team_no")
   entry    QueueEntry @relation(fields: [entryId], references: [id], onDelete: Cascade)
   player   Player     @relation(fields: [playerId], references: [id], onDelete: Cascade)
 
   @@id([entryId, playerId])
   @@map("queue_entry_players")
+}
+
+// Append-only log of everything that happens to the lineup. Open play is a
+// public queue people watch, so "why did they play before me?" needs an answer
+// that isn't someone's memory. entryId is deliberately not a foreign key: the
+// log outlives the entries it describes.
+model QueueEvent {
+  id        String   @id @default(uuid()) @db.Uuid
+  sessionId String   @db.Uuid @map("session_id")
+  entryId   String?  @db.Uuid @map("entry_id")
+  type      String
+  actorType String   @map("actor_type")
+  actorId   String?  @db.Uuid @map("actor_id")
+  payload   Json?
+  createdAt DateTime @default(now()) @map("created_at")
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt])
+  @@map("queue_events")
 }
 
 model Match {

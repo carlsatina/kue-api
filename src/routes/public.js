@@ -3,7 +3,13 @@ import { randomUUID } from "crypto";
 import prisma from "../lib/prisma.js";
 import { upload, compressToTarget } from "../lib/imageUpload.js";
 import { saveProof } from "../lib/storage.js";
-import { reconcileGatedSession, getCapacityState, deadlinePassed } from "../services/joinGate.js";
+import {
+  reconcileGatedSession,
+  getCapacityState,
+  deadlinePassed,
+  nextJoinStatus
+} from "../services/joinGate.js";
+import { findOrCreatePlayer } from "../services/roster.js";
 import { loadAssistantInvite, inviteSummary } from "../utils/invites.js";
 
 const router = express.Router();
@@ -380,6 +386,76 @@ router.get("/queue/:token", async (req, res) => {
   });
 });
 
+// Look up a group invite link so the public join page can show what the player
+// is about to join. Deliberately thin: no roster, no contact details.
+router.get("/group-invite/:token", async (req, res) => {
+  const link = await prisma.groupInviteLink.findUnique({
+    where: { token: req.params.token },
+    include: { group: { include: { _count: { select: { members: true } } } } }
+  });
+
+  if (!link || link.revokedAt || link.group.deletedAt) {
+    return res.status(404).json({ error: "Link not found" });
+  }
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "Link expired" });
+  }
+
+  res.json({
+    group: {
+      id: link.group.id,
+      name: link.group.name,
+      description: link.group.description,
+      memberCount: link.group._count.members
+    }
+  });
+});
+
+// Join a group from the public link: match or create the workspace roster entry
+// and add it to the group. Idempotent — re-opening the link re-reports the same
+// membership rather than erroring.
+router.post("/group-invite/:token/register", async (req, res) => {
+  const { fullName, nickname, contact } = req.body || {};
+  if (!fullName || typeof fullName !== "string") {
+    return res.status(400).json({ error: "Full name is required" });
+  }
+
+  const link = await prisma.groupInviteLink.findUnique({
+    where: { token: req.params.token },
+    include: { group: true }
+  });
+
+  if (!link || link.revokedAt || link.group.deletedAt) {
+    return res.status(404).json({ error: "Link not found" });
+  }
+  if (link.expiresAt && new Date(link.expiresAt) < new Date()) {
+    return res.status(410).json({ error: "Link expired" });
+  }
+
+  const player = await findOrCreatePlayer({
+    workspaceId: link.group.workspaceId,
+    fullName: fullName.trim(),
+    nickname,
+    contact,
+    createdBy: link.group.createdBy || null
+  });
+
+  const existing = await prisma.groupMember.findUnique({
+    where: { groupId_playerId: { groupId: link.group.id, playerId: player.id } }
+  });
+  if (!existing) {
+    await prisma.groupMember.create({
+      data: { groupId: link.group.id, playerId: player.id }
+    });
+  }
+
+  res.json({
+    group: { id: link.group.id, name: link.group.name },
+    player: { id: player.id, fullName: player.fullName, nickname: player.nickname },
+    alreadyMember: Boolean(existing)
+  });
+});
+
 router.get("/session-invite/:token", async (req, res) => {
   const { token } = req.params;
   const link = await prisma.sessionInviteLink.findUnique({
@@ -619,29 +695,20 @@ router.post("/session-invite/:token/register", async (req, res) => {
 
   const workspaceId = link.session.workspaceId;
 
-  let player = null;
-  if (contact) {
-    player = await prisma.player.findFirst({
-      where: { contact, deletedAt: null, workspaceId }
-    });
-  }
-  if (!player) {
-    player = await prisma.player.findFirst({
-      where: { fullName, deletedAt: null, workspaceId }
-    });
-  }
+  const player = await findOrCreatePlayer({
+    workspaceId,
+    fullName,
+    nickname,
+    contact,
+    createdBy: link.session.createdBy || null
+  });
 
-  if (!player) {
-    player = await prisma.player.create({
-      data: { fullName, nickname, contact, workspaceId, createdBy: link.session.createdBy || null }
-    });
-  } else if (nickname || contact) {
-    player = await prisma.player.update({
-      where: { id: player.id },
-      data: {
-        nickname: nickname || player.nickname,
-        contact: contact || player.contact
-      }
+  // A session run for a group adds its self-registered players to that roster,
+  // so tonight's walk-ins are there next time without re-typing their names.
+  if (link.session.groupId) {
+    await prisma.groupMember.createMany({
+      data: [{ groupId: link.session.groupId, playerId: player.id }],
+      skipDuplicates: true
     });
   }
 
@@ -651,18 +718,8 @@ router.post("/session-invite/:token/register", async (req, res) => {
   const existing = await prisma.sessionPlayer.findUnique({
     where: { sessionId_playerId: { sessionId: session.id, playerId: player.id } }
   });
-  const alreadyAdmitted = existing && ["checked_in", "present", "away", "done"].includes(existing.status);
-
-  let status;
-  if (!session.requirePaymentToJoin || alreadyAdmitted) {
-    status = "checked_in";
-  } else if (existing && existing.status === "pending_payment") {
-    status = "pending_payment";
-  } else {
-    // New joiner or currently waitlisted: claim a slot if one is free.
-    const { hasRoom } = await getCapacityState(session);
-    status = hasRoom ? "pending_payment" : "waitlisted";
-  }
+  const { hasRoom } = await getCapacityState(session);
+  const status = nextJoinStatus(session, existing, hasRoom);
 
   const sessionPlayer = await prisma.sessionPlayer.upsert({
     where: { sessionId_playerId: { sessionId: session.id, playerId: player.id } },

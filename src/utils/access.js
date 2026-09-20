@@ -87,3 +87,15 @@ export async function findSessionInviteLinkForUser(linkId, workspaceId) {
   if (!linkId || !workspaceId) return null;
   return prisma.sessionInviteLink.findFirst({ where: { id: linkId, session: { workspaceId } } });
 }
+
+export async function findGroupForUser(groupId, workspaceId) {
+  if (!groupId || !workspaceId) return null;
+  return prisma.group.findFirst({ where: { id: groupId, workspaceId, deletedAt: null } });
+}
+
+export async function findGroupInviteLinkForUser(linkId, workspaceId) {
+  if (!linkId || !workspaceId) return null;
+  return prisma.groupInviteLink.findFirst({
+    where: { id: linkId, group: { workspaceId, deletedAt: null } }
+  });
+}

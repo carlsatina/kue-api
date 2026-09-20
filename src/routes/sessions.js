@@ -2,8 +2,8 @@ import express from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { findSessionForUser } from "../utils/access.js";
-import { reconcileGatedSession } from "../services/joinGate.js";
+import { findGroupForUser, findSessionForUser } from "../utils/access.js";
+import { admitPlayers, reconcileGatedSession } from "../services/joinGate.js";
 
 const router = express.Router();
 
@@ -22,7 +22,10 @@ const createSchema = z.object({
   regularJoinLimit: z.number().int().nonnegative().default(0),
   newJoinerLimit: z.number().int().nonnegative().default(0),
   returnToQueue: z.boolean().default(true),
-  announcements: z.string().optional()
+  announcements: z.string().optional(),
+  groupId: z.string().uuid().nullable().optional(),
+  queueMode: z.enum(["pairs", "open_play"]).default("pairs"),
+  pairingStrategy: z.enum(["arrival", "balanced", "avoid_repeat"]).default("arrival")
 });
 
 const feeSchema = z.object({
@@ -43,7 +46,19 @@ const updateSessionSchema = z.object({
   paymentDeadline: z.string().datetime().nullable().optional(),
   regularJoinLimit: z.number().int().nonnegative().optional(),
   newJoinerLimit: z.number().int().nonnegative().optional(),
-  announcements: z.string().optional()
+  announcements: z.string().optional(),
+  groupId: z.string().uuid().nullable().optional(),
+  queueMode: z.enum(["pairs", "open_play"]).optional(),
+  pairingStrategy: z.enum(["arrival", "balanced", "avoid_repeat"]).optional()
+});
+
+// Either an explicit list of players, a whole group's roster, or a group
+// narrowed to some of its members.
+const bulkPlayersSchema = z.object({
+  playerIds: z.array(z.string().uuid()).min(1).optional(),
+  groupId: z.string().uuid().optional()
+}).refine((data) => data.playerIds || data.groupId, {
+  message: "Provide playerIds, groupId, or both"
 });
 
 const bracketOverrideSchema = z.object({
@@ -66,6 +81,12 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
   const data = parse.data;
+  if (data.groupId && !(await findGroupForUser(data.groupId, req.workspaceId))) {
+    return res.status(404).json({ error: "Group not found" });
+  }
+  if (data.queueMode === "open_play" && data.mode === "tournament") {
+    return res.status(409).json({ error: "Open play isn't available in tournament mode" });
+  }
   const session = await prisma.session.create({
     data: {
       name: data.name,
@@ -83,6 +104,9 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
       newJoinerLimit: data.newJoinerLimit,
       returnToQueue: data.returnToQueue,
       announcements: data.announcements,
+      groupId: data.groupId ?? null,
+      queueMode: data.queueMode,
+      pairingStrategy: data.pairingStrategy,
       status: "draft",
       createdBy: req.user.id,
       workspaceId: req.workspaceId
@@ -205,6 +229,13 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
   }
   await reconcileGatedSession(id);
 
+  const group = session.groupId
+    ? await prisma.group.findUnique({
+        where: { id: session.groupId },
+        select: { id: true, name: true }
+      })
+    : null;
+
   const courtSessions = await prisma.courtSession.findMany({
     where: {
       sessionId: session.id,
@@ -230,7 +261,7 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
     currentMatch: cs.currentMatchId ? matchMap.get(cs.currentMatchId) || null : null
   }));
 
-  res.json({ ...session, courtSessions: enrichedCourtSessions });
+  res.json({ ...session, group, courtSessions: enrichedCourtSessions });
 });
 
 router.patch("/:id/fee", requireAuth, requireRole(["admin"]), async (req, res) => {
@@ -286,7 +317,10 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
       : (data.paymentDeadline ? new Date(data.paymentDeadline) : null),
     regularJoinLimit: data.regularJoinLimit,
     newJoinerLimit: data.newJoinerLimit,
-    announcements: data.announcements
+    announcements: data.announcements,
+    groupId: data.groupId,
+    queueMode: data.queueMode,
+    pairingStrategy: data.pairingStrategy
   };
   const hasUpdates = Object.values(updates).some((value) => value !== undefined);
   if (!hasUpdates) {
@@ -297,12 +331,76 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   if (!session) {
     return res.status(404).json({ error: "Session not found" });
   }
+  if (data.groupId && !(await findGroupForUser(data.groupId, req.workspaceId))) {
+    return res.status(404).json({ error: "Group not found" });
+  }
+  const nextMode = data.mode ?? session.mode;
+  const nextQueueMode = data.queueMode ?? session.queueMode;
+  if (nextQueueMode === "open_play" && nextMode === "tournament") {
+    return res.status(409).json({ error: "Open play isn't available in tournament mode" });
+  }
 
   const updated = await prisma.session.update({
     where: { id },
     data: updates
   });
   res.json(updated);
+});
+
+// Add many players to a session at once — the "select group members to play
+// tonight" action. Runs through the same payment gate and join limits as
+// self-registration, so some players may come back waitlisted.
+router.post("/:id/players/bulk", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
+  const { id } = req.params;
+  const parse = bulkPlayersSchema.safeParse(req.body);
+  if (!parse.success) {
+    return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
+  }
+  const session = await findSessionForUser(id, req.workspaceId);
+  if (!session) {
+    return res.status(404).json({ error: "Session not found" });
+  }
+  if (session.status === "closed") {
+    return res.status(409).json({ error: "Session is closed" });
+  }
+
+  const { playerIds, groupId } = parse.data;
+  let candidateIds = playerIds ? [...new Set(playerIds)] : null;
+
+  if (groupId) {
+    const group = await findGroupForUser(groupId, req.workspaceId);
+    if (!group) {
+      return res.status(404).json({ error: "Group not found" });
+    }
+    const members = await prisma.groupMember.findMany({
+      where: { groupId: group.id, player: { deletedAt: null } },
+      select: { playerId: true }
+    });
+    const memberIds = new Set(members.map((m) => m.playerId));
+    // With both, the explicit list is a selection *within* the group.
+    candidateIds = candidateIds
+      ? candidateIds.filter((playerId) => memberIds.has(playerId))
+      : [...memberIds];
+  }
+
+  if (!candidateIds.length) {
+    return res.status(400).json({ error: "No players to add" });
+  }
+
+  const owned = await prisma.player.count({
+    where: { id: { in: candidateIds }, workspaceId: req.workspaceId, deletedAt: null }
+  });
+  if (owned !== candidateIds.length) {
+    return res.status(404).json({ error: "Player not found" });
+  }
+
+  const results = await admitPlayers(session.id, candidateIds);
+  const counts = results.reduce((acc, row) => {
+    acc[row.status] = (acc[row.status] || 0) + 1;
+    return acc;
+  }, {});
+
+  res.json({ results, counts, added: results.filter((r) => !r.alreadyInSession).length });
 });
 
 router.get("/:id/players", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
