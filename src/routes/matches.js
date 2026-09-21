@@ -2,7 +2,7 @@ import express from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { suggestMatch, suggestOpenPlayMatch } from "../services/queue.js";
+import { suggestMatch } from "../services/queue.js";
 import { findSessionForUser } from "../utils/access.js";
 import { startMatchTx } from "../services/matchStart.js";
 import { logQueueEvent } from "../services/queueEvents.js";
@@ -34,10 +34,6 @@ const updateResultSchema = z.object({
 
 const cancelSchema = z.object({
   matchId: z.string().uuid()
-});
-
-const callNextSchema = z.object({
-  courtSessionId: z.string().uuid()
 });
 
 router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
@@ -151,82 +147,6 @@ router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), a
 // behind a session-scoped advisory lock. Two staff phones tapping this a second
 // apart is normal at a venue, and without the lock they would both read the
 // same lineup and consume the same rackets twice.
-router.post("/:sessionId/call-next", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
-  const { sessionId } = req.params;
-  const session = await findSessionForUser(sessionId, req.workspaceId);
-  if (!session) {
-    return res.status(404).json({ error: "Session not found" });
-  }
-  if (session.queueMode !== "open_play") {
-    return res.status(409).json({ error: "This session isn't running open play" });
-  }
-  const parse = callNextSchema.safeParse(req.body);
-  if (!parse.success) {
-    return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
-  }
-  const { courtSessionId } = parse.data;
-
-  const result = await prisma.$transaction(async (tx) => {
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${sessionId}::text, 0))`;
-
-    // Re-read the court inside the lock: another call may have taken it
-    // between this request arriving and the lock being granted.
-    const courtSession = await tx.courtSession.findFirst({
-      where: { id: courtSessionId, sessionId }
-    });
-    if (!courtSession) return { error: "Court session not found", status: 404 };
-    if (courtSession.status === "in_match" || courtSession.currentMatchId) {
-      return { error: "That court is already in a match", status: 409 };
-    }
-    if (courtSession.status === "maintenance") {
-      return { error: "That court is under maintenance", status: 409 };
-    }
-
-    const picked = await suggestOpenPlayMatch(sessionId, tx);
-    if (!picked) return { error: "Not enough players in the lineup", status: 409 };
-
-    const match = await startMatchTx(tx, {
-      sessionId,
-      courtSessionId,
-      matchType: picked.matchType,
-      teams: picked.teams,
-      entryIds: picked.entryIds
-    });
-
-    return { match, picked };
-  });
-
-  if (result.error) {
-    return res.status(result.status).json({ error: result.error });
-  }
-
-  const { match, picked } = result;
-  await logQueueEvent(prisma, {
-    sessionId,
-    type: "called",
-    actorId: req.user.id,
-    payload: {
-      matchId: match.id,
-      courtSessionId,
-      entryIds: picked.entryIds,
-      teams: picked.teams,
-      strategy: picked.strategy
-    }
-  });
-  // Being passed over is the part players argue about, so it gets its own line.
-  for (const entryId of picked.skippedEntryIds) {
-    await logQueueEvent(prisma, {
-      sessionId,
-      entryId,
-      type: "skipped",
-      actorType: "system",
-      payload: { reason: "too many players for the seats left", matchId: match.id }
-    });
-  }
-
-  res.json({ matchId: match.id, teams: picked.teams, strategy: picked.strategy, skippedEntryIds: picked.skippedEntryIds });
-});
-
 router.post("/:sessionId/end", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
   const { sessionId } = req.params;
   const session = await findSessionForUser(sessionId, req.workspaceId);

@@ -8,12 +8,8 @@ import { logQueueEvent } from "../services/queueEvents.js";
 const router = express.Router();
 
 const enqueueSchema = z.object({
-  // Optional: in open play the format comes from the session, not the caller.
   type: z.enum(["singles", "doubles"]).optional(),
-  playerIds: z.array(z.string().uuid()).min(1).max(4),
-  // A full-court entry the organiser fixed by hand ("these four, split like so").
-  lockedTeams: z.boolean().optional(),
-  teams: z.array(z.array(z.string().uuid())).length(2).optional()
+  playerIds: z.array(z.string().uuid()).min(1).max(2)
 });
 
 const dequeueSchema = z.object({
@@ -48,46 +44,21 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
   if (!parse.success) {
     return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
   }
-  const { playerIds, teams } = parse.data;
+  const { playerIds } = parse.data;
   const type = parse.data.type || session.gameType;
-  const lockedTeams = Boolean(parse.data.lockedTeams);
-  const openPlay = session.queueMode === "open_play";
   const teamSize = type === "singles" ? 1 : 2;
 
   if (new Set(playerIds).size !== playerIds.length) {
     return res.status(400).json({ error: "A player can only appear once in an entry" });
   }
 
-  if (!openPlay) {
-    // Classic mode: an entry is a ready-made side.
-    if (lockedTeams) {
-      return res.status(409).json({ error: "Fixed foursomes are only available in open play" });
-    }
-    if (playerIds.length !== teamSize) {
-      return res.status(400).json({
-        error: type === "singles" ? "Singles requires 1 player" : "Doubles requires 2 players"
-      });
-    }
-  } else if (lockedTeams) {
-    // A hand-picked full court: everyone named, and the sides spelled out.
-    if (playerIds.length !== teamSize * 2) {
-      return res.status(400).json({ error: `A fixed match needs ${teamSize * 2} players` });
-    }
-    if (!teams || teams.some((team) => team.length !== teamSize)) {
-      return res.status(400).json({ error: `Each side needs ${teamSize} player${teamSize === 1 ? "" : "s"}` });
-    }
-    const named = teams.flat();
-    const sameSet =
-      named.length === playerIds.length && named.every((id) => playerIds.includes(id));
-    if (!sameSet || new Set(named).size !== named.length) {
-      return res.status(400).json({ error: "The two sides must use each player exactly once" });
-    }
-  } else if (playerIds.length > teamSize) {
-    // A racket in the lineup: one player, or a pair who want to stay together.
+  // An entry is one ready-made side.
+  if (playerIds.length !== teamSize) {
     return res.status(400).json({
-      error: type === "singles" ? "Singles queues 1 player at a time" : "Queue 1 player, or 2 to keep a partner"
+      error: type === "singles" ? "Singles requires 1 player" : "Doubles requires 2 players"
     });
   }
+
   const ownedPlayers = await prisma.player.count({
     where: { id: { in: playerIds }, workspaceId: req.workspaceId, deletedAt: null }
   });
@@ -102,7 +73,7 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
     return res.status(409).json({ error: "One or more players are awaiting payment confirmation" });
   }
 
-  if (session.mode === "tournament" && !openPlay) {
+  if (session.mode === "tournament") {
     const players = await prisma.player.findMany({
       where: { id: { in: playerIds }, workspaceId: req.workspaceId, deletedAt: null },
       select: { id: true, teamId: true }
@@ -134,28 +105,18 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
   });
   const position = (maxPosition._max.position || 0) + 1;
 
-  const teamNoByPlayer = new Map();
-  if (lockedTeams && teams) {
-    teams.forEach((team, idx) => team.forEach((playerId) => teamNoByPlayer.set(playerId, idx + 1)));
-  }
-
   const entry = await prisma.queueEntry.create({
     data: {
       sessionId,
       type,
       status: "queued",
       position,
-      lockedTeams,
       source: "staff"
     }
   });
 
   await prisma.queueEntryPlayer.createMany({
-    data: playerIds.map((playerId) => ({
-      entryId: entry.id,
-      playerId,
-      teamNo: teamNoByPlayer.get(playerId) ?? null
-    }))
+    data: playerIds.map((playerId) => ({ entryId: entry.id, playerId }))
   });
 
   await logQueueEvent(prisma, {
@@ -163,7 +124,7 @@ router.post("/:sessionId/enqueue", requireAuth, requireRole(["admin", "staff"]),
     entryId: entry.id,
     type: "enqueued",
     actorId: req.user.id,
-    payload: { playerIds, position, lockedTeams }
+    payload: { playerIds, position }
   });
 
   const fullEntry = await prisma.queueEntry.findUnique({

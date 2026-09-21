@@ -23,10 +23,9 @@ const createSchema = z.object({
   regularJoinLimit: z.number().int().nonnegative().default(0),
   newJoinerLimit: z.number().int().nonnegative().default(0),
   returnToQueue: z.boolean().default(true),
+  matchByLevel: z.boolean().default(true),
   announcements: z.string().optional(),
   groupId: z.string().uuid().nullable().optional(),
-  queueMode: z.enum(["pairs", "open_play"]).default("pairs"),
-  pairingStrategy: z.enum(["arrival", "balanced", "avoid_repeat"]).default("arrival")
 });
 
 const feeSchema = z.object({
@@ -47,10 +46,9 @@ const updateSessionSchema = z.object({
   paymentDeadline: z.string().datetime().nullable().optional(),
   regularJoinLimit: z.number().int().nonnegative().optional(),
   newJoinerLimit: z.number().int().nonnegative().optional(),
+  matchByLevel: z.boolean().optional(),
   announcements: z.string().optional(),
   groupId: z.string().uuid().nullable().optional(),
-  queueMode: z.enum(["pairs", "open_play"]).optional(),
-  pairingStrategy: z.enum(["arrival", "balanced", "avoid_repeat"]).optional()
 });
 
 // Either an explicit list of players, a whole group's roster, or a group
@@ -85,9 +83,6 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
   if (data.groupId && !(await findGroupForUser(data.groupId, req.workspaceId))) {
     return res.status(404).json({ error: "Group not found" });
   }
-  if (data.queueMode === "open_play" && data.mode === "tournament") {
-    return res.status(409).json({ error: "Open play isn't available in tournament mode" });
-  }
   // Before the session exists, make sure the workspace has courts to open it
   // onto — a workspace created after seeding starts with none.
   await ensureMinimumCourts(req.workspaceId, req.user.id);
@@ -107,10 +102,9 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
       regularJoinLimit: data.regularJoinLimit,
       newJoinerLimit: data.newJoinerLimit,
       returnToQueue: data.returnToQueue,
+      matchByLevel: data.matchByLevel,
       announcements: data.announcements,
       groupId: data.groupId ?? null,
-      queueMode: data.queueMode,
-      pairingStrategy: data.pairingStrategy,
       status: "draft",
       createdBy: req.user.id,
       workspaceId: req.workspaceId
@@ -322,9 +316,8 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
     regularJoinLimit: data.regularJoinLimit,
     newJoinerLimit: data.newJoinerLimit,
     announcements: data.announcements,
+    matchByLevel: data.matchByLevel,
     groupId: data.groupId,
-    queueMode: data.queueMode,
-    pairingStrategy: data.pairingStrategy
   };
   const hasUpdates = Object.values(updates).some((value) => value !== undefined);
   if (!hasUpdates) {
@@ -338,12 +331,6 @@ router.patch("/:id", requireAuth, requireRole(["admin"]), async (req, res) => {
   if (data.groupId && !(await findGroupForUser(data.groupId, req.workspaceId))) {
     return res.status(404).json({ error: "Group not found" });
   }
-  const nextMode = data.mode ?? session.mode;
-  const nextQueueMode = data.queueMode ?? session.queueMode;
-  if (nextQueueMode === "open_play" && nextMode === "tournament") {
-    return res.status(409).json({ error: "Open play isn't available in tournament mode" });
-  }
-
   const updated = await prisma.session.update({
     where: { id },
     data: updates

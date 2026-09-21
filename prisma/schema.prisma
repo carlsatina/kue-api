@@ -187,6 +187,9 @@ model Session {
   regularJoinLimit Int            @default(0) @map("regular_join_limit")
   newJoinerLimit   Int            @default(0) @map("new_joiner_limit")
   returnToQueue  Boolean          @default(true) @map("return_to_queue")
+  // Auto Q groups players of a similar level. Off means it picks purely by
+  // fairness, which mixed-level social sessions may prefer.
+  matchByLevel   Boolean          @default(true) @map("match_by_level")
   queueMode      QueueMode        @default(pairs) @map("queue_mode")
   pairingStrategy PairingStrategy @default(arrival) @map("pairing_strategy")
   announcements  String?
