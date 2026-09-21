@@ -149,7 +149,47 @@ const SCALE_FIRST_NAMES = [
   "Kiko", "Lira", "Marco", "Nina", "Omar", "Pia", "Quinn", "Rafa", "Sari", "Tomas"
 ];
 const SCALE_LAST_NAMES = ["Abad", "Bautista", "Cruz", "Delgado", "Esguerra", "Fajardo", "Gomez"];
-const SCALE_SKILLS = ["Beginner", "Intermediate", "Advance", "Elite"];
+// A club's real spread, not four equal quarters: mostly intermediate with a
+// tail either side. Counts sum to SCALE_PLAYER_COUNT.
+const SCALE_SKILL_MIX = [
+  ["Beginner", 22],
+  ["Intermediate", 60],
+  ["Advance", 42],
+  ["Elite", 16]
+];
+
+// Deterministic PRNG, so a re-seed reproduces the same roster while the skill
+// assignment stays independent of the name pools.
+function mulberry32(seed) {
+  return () => {
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function shuffled(items, rand) {
+  const out = items.slice();
+  for (let i = out.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(rand() * (i + 1));
+    [out[i], out[j]] = [out[j], out[i]];
+  }
+  return out;
+}
+
+const SCALE_PLAYER_COUNT = 140;
+
+// Skill drawn from a shuffled pool rather than from the name index. Deriving it
+// from the index correlated it with the name — first name is index % 20, skill
+// was index % 4, and 4 divides 20 — so every "Alex" shared a level and sorting
+// the roster by name sorted it by skill. Arrival order is assigned over that
+// same sorted list, so skill tracked arrival too, and any pairing logic tested
+// against this fixture looked better than it was.
+const SCALE_SKILLS = shuffled(
+  SCALE_SKILL_MIX.flatMap(([level, count]) => Array(count).fill(level)),
+  mulberry32(20260921)
+);
 
 // Deterministic so a re-seed produces the same roster: 20 x 7 = 140 unique names.
 function scalePlayerData(index) {
@@ -159,11 +199,9 @@ function scalePlayerData(index) {
     fullName: `${first} ${last}`,
     // Only some players have a nickname, so both display paths get exercised.
     nickname: index % 3 === 0 ? first : null,
-    skillLevel: SCALE_SKILLS[index % SCALE_SKILLS.length]
+    skillLevel: SCALE_SKILLS[index]
   };
 }
-
-const SCALE_PLAYER_COUNT = 140;
 const SCALE_GROUPS = [
   { name: "Tuesday Regulars", description: "The big midweek crowd.", start: 0, size: 100 },
   { name: "Weekend Social", description: "Saturday morning casuals.", start: 100, size: 24 },
