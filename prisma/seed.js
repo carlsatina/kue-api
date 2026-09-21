@@ -137,12 +137,154 @@ async function seedSession(workspaceId, createdBy) {
   });
 }
 
+
+// ── Scale fixture ────────────────────────────────────────────────────────────
+// A second account carrying the sizes the small demo data never reaches: a
+// 100-member group, and a session with 80 players already in it. Useful for
+// checking the group roster, the "Add from group" picker and the fees list
+// behave at a realistic club size rather than at eight players.
+
+const SCALE_FIRST_NAMES = [
+  "Alex", "Bea", "Carlo", "Dana", "Elias", "Faye", "Gabe", "Hana", "Ivan", "Jules",
+  "Kiko", "Lira", "Marco", "Nina", "Omar", "Pia", "Quinn", "Rafa", "Sari", "Tomas"
+];
+const SCALE_LAST_NAMES = ["Abad", "Bautista", "Cruz", "Delgado", "Esguerra", "Fajardo", "Gomez"];
+const SCALE_SKILLS = ["Beginner", "Intermediate", "Advance", "Elite"];
+
+// Deterministic so a re-seed produces the same roster: 20 x 7 = 140 unique names.
+function scalePlayerData(index) {
+  const first = SCALE_FIRST_NAMES[index % SCALE_FIRST_NAMES.length];
+  const last = SCALE_LAST_NAMES[Math.floor(index / SCALE_FIRST_NAMES.length) % SCALE_LAST_NAMES.length];
+  return {
+    fullName: `${first} ${last}`,
+    // Only some players have a nickname, so both display paths get exercised.
+    nickname: index % 3 === 0 ? first : null,
+    skillLevel: SCALE_SKILLS[index % SCALE_SKILLS.length]
+  };
+}
+
+const SCALE_PLAYER_COUNT = 140;
+const SCALE_GROUPS = [
+  { name: "Tuesday Regulars", description: "The big midweek crowd.", start: 0, size: 100 },
+  { name: "Weekend Social", description: "Saturday morning casuals.", start: 100, size: 24 },
+  { name: "Coaching Squad", description: "Drills and ladder matches.", start: 124, size: 12 }
+];
+const SCALE_SESSION_PLAYERS = 80;
+
+async function seedScaleUser() {
+  const email = process.env.SCALE_EMAIL || "scale@kue.local";
+  const password = process.env.SCALE_PASSWORD || "password123";
+
+  let user = await prisma.user.findUnique({ where: { email } });
+  if (!user) {
+    user = await prisma.user.create({
+      data: { email, passwordHash: await bcrypt.hash(password, 10), fullName: "Scale Tester" }
+    });
+    const adminRole = await prisma.role.findUnique({ where: { name: "admin" } });
+    await prisma.userRole.create({ data: { userId: user.id, roleId: adminRole.id } });
+  }
+
+  const workspace = await seedWorkspace(user);
+  const workspaceId = workspace.id;
+  const createdBy = user.id;
+
+  // Courts
+  if ((await prisma.court.count({ where: { workspaceId } })) === 0) {
+    await prisma.court.createMany({
+      data: [1, 2, 3, 4].map((n) => ({ name: `Court ${n}`, workspaceId, createdBy }))
+    });
+  }
+
+  // Players
+  if ((await prisma.player.count({ where: { workspaceId } })) === 0) {
+    await prisma.player.createMany({
+      data: Array.from({ length: SCALE_PLAYER_COUNT }, (_, i) => ({
+        ...scalePlayerData(i),
+        workspaceId,
+        createdBy
+      }))
+    });
+  }
+  // Ordered by name so the slices below are stable across runs.
+  const players = await prisma.player.findMany({
+    where: { workspaceId, deletedAt: null },
+    orderBy: [{ fullName: "asc" }, { id: "asc" }],
+    select: { id: true }
+  });
+
+  // Groups
+  for (const spec of SCALE_GROUPS) {
+    const existing = await prisma.group.findFirst({
+      where: { workspaceId, name: spec.name, deletedAt: null }
+    });
+    if (existing) continue;
+
+    const group = await prisma.group.create({
+      data: { name: spec.name, description: spec.description, workspaceId, createdBy }
+    });
+    const members = players.slice(spec.start, spec.start + spec.size);
+    await prisma.groupMember.createMany({
+      data: members.map((player, i) => ({
+        groupId: group.id,
+        playerId: player.id,
+        // One owner and two managers, so the roster shows every role badge.
+        role: i === 0 ? "owner" : i < 3 ? "manager" : "member"
+      }))
+    });
+  }
+
+  // Session with players already in it
+  const sessionName = "Friday Night Open";
+  const existingSession = await prisma.session.findFirst({ where: { workspaceId, name: sessionName } });
+  if (!existingSession) {
+    const session = await prisma.session.create({
+      data: {
+        name: sessionName,
+        status: "open",
+        feeMode: "flat",
+        feeAmount: 150,
+        gameType: "doubles",
+        returnToQueue: true,
+        workspaceId,
+        createdBy
+      }
+    });
+
+    const courts = await prisma.court.findMany({
+      where: { workspaceId, deletedAt: null, active: true }
+    });
+    await prisma.courtSession.createMany({
+      data: courts.map((court) => ({ sessionId: session.id, courtId: court.id, status: "available" }))
+    });
+
+    // Stagger check-in over the two hours before now. Nobody has played yet, so
+    // they all tie on idle time and check-in order is what decides who Auto Q
+    // picks first — identical timestamps would hide that.
+    const firstCheckIn = Date.now() - 2 * 60 * 60 * 1000;
+    await prisma.sessionPlayer.createMany({
+      data: players.slice(0, SCALE_SESSION_PLAYERS).map((player, i) => ({
+        sessionId: session.id,
+        playerId: player.id,
+        status: "checked_in",
+        checkedInAt: new Date(firstCheckIn + i * 90 * 1000)
+      }))
+    });
+  }
+
+  console.log(
+    `Scale fixture: ${email} / ${password} — ${SCALE_PLAYER_COUNT} players, ` +
+      `${SCALE_GROUPS.length} groups (largest ${SCALE_GROUPS[0].size}), ` +
+      `"${sessionName}" with ${SCALE_SESSION_PLAYERS} players`
+  );
+}
+
 async function main() {
   await seedRoles();
   const admin = await seedAdmin();
   const workspace = await seedWorkspace(admin);
   await seedCourtsPlayers(workspace.id, admin.id);
   await seedSession(workspace.id, admin.id);
+  await seedScaleUser();
 }
 
 main()
