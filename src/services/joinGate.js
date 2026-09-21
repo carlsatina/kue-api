@@ -35,8 +35,8 @@ export async function reconcileGatedSession(sessionId) {
 
 // How many slots are taken vs available. The cap is the combined Regular + New
 // joiner limits; a total of 0 means unlimited (no waitlist).
-export async function getCapacityState(session) {
-  const sps = await prisma.sessionPlayer.findMany({
+export async function getCapacityState(session, client = prisma) {
+  const sps = await client.sessionPlayer.findMany({
     where: { sessionId: session.id },
     select: { status: true }
   });
@@ -65,38 +65,65 @@ function consumesSlot(status) {
 }
 
 // Add several players to a session in one pass, honouring the payment gate and
-// join limits. Capacity is tracked locally as we go so a bulk add can't hand
-// out more slots than the session has. Returns one result row per player.
+// join limits. Every status is decided before anything is written, and the
+// writes go in as a handful of batched statements inside one transaction, so a
+// bulk add of a large group either lands whole or not at all. Returns one
+// result row per distinct player.
 export async function admitPlayers(sessionId, playerIds, { isNewPlayer = false } = {}) {
   await reconcileGatedSession(sessionId);
-  const session = await prisma.session.findUnique({ where: { id: sessionId } });
-  if (!session) return null;
 
-  const existing = await prisma.sessionPlayer.findMany({
-    where: { sessionId, playerId: { in: playerIds } }
-  });
-  const existingByPlayer = new Map(existing.map((sp) => [sp.playerId, sp]));
+  // A repeated id would otherwise be counted twice against the join limit.
+  const uniqueIds = [...new Set(playerIds)];
+  if (!uniqueIds.length) return [];
 
-  const { capacity, used: usedAtStart } = await getCapacityState(session);
-  let used = usedAtStart;
-  const results = [];
+  return prisma.$transaction(async (tx) => {
+    const session = await tx.session.findUnique({ where: { id: sessionId } });
+    if (!session) return null;
 
-  for (const playerId of playerIds) {
-    const current = existingByPlayer.get(playerId) || null;
-    const hasRoom = capacity === 0 || used < capacity;
-    const status = nextJoinStatus(session, current, hasRoom);
-    if (consumesSlot(status) && !(current && consumesSlot(current.status))) {
-      used += 1;
+    const existing = await tx.sessionPlayer.findMany({
+      where: { sessionId, playerId: { in: uniqueIds } }
+    });
+    const existingByPlayer = new Map(existing.map((sp) => [sp.playerId, sp]));
+
+    const { capacity, used: usedAtStart } = await getCapacityState(session, tx);
+    let used = usedAtStart;
+
+    // Work out everyone's status first. This half is pure: the slot arithmetic
+    // is settled before a single row is touched.
+    const results = [];
+    const toCreate = [];
+    const idsByNewStatus = new Map();
+
+    for (const playerId of uniqueIds) {
+      const current = existingByPlayer.get(playerId) || null;
+      const hasRoom = capacity === 0 || used < capacity;
+      const status = nextJoinStatus(session, current, hasRoom);
+      if (consumesSlot(status) && !(current && consumesSlot(current.status))) {
+        used += 1;
+      }
+
+      if (!current) {
+        toCreate.push({ sessionId, playerId, status, isNewPlayer });
+      } else if (current.status !== status) {
+        if (!idsByNewStatus.has(status)) idsByNewStatus.set(status, []);
+        idsByNewStatus.get(status).push(playerId);
+      }
+
+      results.push({ playerId, status, alreadyInSession: Boolean(current) });
     }
 
-    await prisma.sessionPlayer.upsert({
-      where: { sessionId_playerId: { sessionId, playerId } },
-      update: { status },
-      create: { sessionId, playerId, status, isNewPlayer }
-    });
+    // One insert plus one update per distinct status, rather than a round trip
+    // per player.
+    if (toCreate.length) {
+      await tx.sessionPlayer.createMany({ data: toCreate, skipDuplicates: true });
+    }
+    for (const [status, ids] of idsByNewStatus) {
+      await tx.sessionPlayer.updateMany({
+        where: { sessionId, playerId: { in: ids } },
+        data: { status }
+      });
+    }
 
-    results.push({ playerId, status, alreadyInSession: Boolean(current) });
-  }
-
-  return results;
+    return results;
+  });
 }

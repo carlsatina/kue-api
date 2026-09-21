@@ -35,7 +35,13 @@ const inviteLinkSchema = z.object({
 const memberInclude = {
   members: {
     where: { player: { deletedAt: null } },
-    include: { player: { include: { team: true } } },
+    // Only the fields the roster and the group picker actually render. The
+    // nested team relation was dead weight on every member of a large group.
+    include: {
+      player: {
+        select: { id: true, fullName: true, nickname: true, skillLevel: true }
+      }
+    },
     orderBy: [{ role: "asc" }, { player: { fullName: "asc" } }]
   }
 };
