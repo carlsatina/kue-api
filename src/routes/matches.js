@@ -2,16 +2,11 @@ import express from "express";
 import { z } from "zod";
 import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
-import { suggestMatch } from "../services/queue.js";
 import { findSessionForUser } from "../utils/access.js";
 import { startMatchTx } from "../services/matchStart.js";
 import { logQueueEvent } from "../services/queueEvents.js";
 
 const router = express.Router();
-
-const suggestSchema = z.object({
-  matchType: z.enum(["singles", "doubles"]).default("doubles")
-});
 
 const startSchema = z.object({
   courtSessionId: z.string().uuid(),
@@ -45,23 +40,6 @@ router.get("/:id", requireAuth, requireRole(["admin", "staff"]), async (req, res
     return res.status(404).json({ error: "Match not found" });
   }
   res.json(match);
-});
-
-router.post("/:sessionId/suggest", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
-  const session = await findSessionForUser(req.params.sessionId, req.workspaceId);
-  if (!session) {
-    return res.status(404).json({ error: "Session not found" });
-  }
-  const parse = suggestSchema.safeParse(req.body || {});
-  if (!parse.success) {
-    return res.status(400).json({ error: "Invalid input", details: parse.error.flatten() });
-  }
-  const { matchType } = parse.data;
-  const suggestion = await suggestMatch(req.params.sessionId, matchType);
-  if (!suggestion) {
-    return res.status(404).json({ error: "Not enough eligible players" });
-  }
-  res.json(suggestion);
 });
 
 router.post("/:sessionId/start", requireAuth, requireRole(["admin", "staff"]), async (req, res) => {
