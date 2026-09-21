@@ -4,6 +4,7 @@ import prisma from "../lib/prisma.js";
 import { requireAuth, requireRole } from "../middleware/auth.js";
 import { findGroupForUser, findSessionForUser } from "../utils/access.js";
 import { admitPlayers, reconcileGatedSession } from "../services/joinGate.js";
+import { ensureMinimumCourts } from "../services/courts.js";
 
 const router = express.Router();
 
@@ -87,6 +88,9 @@ router.post("/", requireAuth, requireRole(["admin"]), async (req, res) => {
   if (data.queueMode === "open_play" && data.mode === "tournament") {
     return res.status(409).json({ error: "Open play isn't available in tournament mode" });
   }
+  // Before the session exists, make sure the workspace has courts to open it
+  // onto — a workspace created after seeding starts with none.
+  await ensureMinimumCourts(req.workspaceId, req.user.id);
   const session = await prisma.session.create({
     data: {
       name: data.name,
